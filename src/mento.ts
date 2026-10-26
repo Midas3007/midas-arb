@@ -1,0 +1,80 @@
+// Mento: Celo's oracle-priced exchange for its local stablecoins (USDm, BRLm, KESm, ...).
+// Exchanges are read from the Broker on-chain, so only the Broker address is hard-coded. Mento pools are mostly
+// against USDm, so a USDT trade usually goes USDT -> USDm -> X (two Broker swaps).
+import { encodeFunctionData, parseAbi, type Hex } from 'viem'
+import { pub, sendTagged } from './wallet.js'
+import { balanceOf, ensureAllowance } from './swap.js'
+import { MENTO_BROKER, TOKENS, type TokenKey } from './config.js'
+
+const brokerAbi = parseAbi([
+  'function getExchangeProviders() view returns (address[])',
+  'function getAmountOut(address exchangeProvider, bytes32 exchangeId, address tokenIn, address tokenOut, uint256 amountIn) view returns (uint256)',
+  'function swapIn(address exchangeProvider, bytes32 exchangeId, address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOutMin) returns (uint256)',
+])
+const providerAbi = parseAbi(['function getExchanges() view returns ((bytes32 exchangeId, address[] assets)[])'])
+
+type Exchange = { provider: `0x${string}`; id: Hex }
+const exchanges = new Map<string, Exchange>()
+const pairOf = (a: TokenKey, b: TokenKey) => [a, b].sort().join(':')
+const byAddress = new Map(Object.entries(TOKENS).map(([k, t]) => [t.address.toLowerCase(), k as TokenKey]))
+
+// Reads every exchange from the Broker. Returns how many involve tokens the bot knows.
+export async function mentoDiscover() {
+  exchanges.clear()
+  const providers = await pub.readContract({ address: MENTO_BROKER, abi: brokerAbi, functionName: 'getExchangeProviders' })
+  for (const provider of providers) {
+    const list = await pub.readContract({ address: provider, abi: providerAbi, functionName: 'getExchanges' }).catch(() => [])
+    for (const ex of list) {
+      if (ex.assets.length !== 2) continue
+      const a = byAddress.get(ex.assets[0].toLowerCase()), b = byAddress.get(ex.assets[1].toLowerCase())
+      if (a && b) exchanges.set(pairOf(a, b), { provider, id: ex.exchangeId })
+    }
+  }
+  return exchanges.size
+}
+
+// Direct exchange, or two steps through USDm.
+function route(tin: TokenKey, tout: TokenKey): [TokenKey, TokenKey, Exchange][] | null {
+  const direct = exchanges.get(pairOf(tin, tout))
+  if (direct) return [[tin, tout, direct]]
+  if (tin === 'USDm' || tout === 'USDm') return null
+  const a = exchanges.get(pairOf(tin, 'USDm')), b = exchanges.get(pairOf('USDm', tout))
+  return a && b ? [[tin, 'USDm', a], ['USDm', tout, b]] : null
+}
+
+const amountOut = (ex: Exchange, tin: TokenKey, tout: TokenKey, amt: bigint) =>
+  pub.readContract({ address: MENTO_BROKER, abi: brokerAbi, functionName: 'getAmountOut', args: [ex.provider, ex.id, TOKENS[tin].address, TOKENS[tout].address, amt] })
+
+// null when there is no route, or the quote reverts (stale oracle, trading limit reached, pool paused).
+export async function mentoQuote(tin: TokenKey, tout: TokenKey, amountIn: bigint): Promise<bigint | null> {
+  const r = route(tin, tout)
+  if (!r || amountIn <= 0n) return null
+  try {
+    let amt = amountIn
+    for (const [a, b, ex] of r) amt = await amountOut(ex, a, b, amt)
+    return amt
+  } catch { return null }
+}
+
+// Swaps along the route. The last step enforces minOut; a middle step accepts its quote minus slippageBps.
+export async function mentoSwap(tin: TokenKey, tout: TokenKey, amountIn: bigint, minOut: bigint, slippageBps = 30n): Promise<Hex> {
+  const r = route(tin, tout)
+  if (!r) throw new Error(`No Mento route ${tin} -> ${tout}`)
+  let amt = amountIn, hash: Hex = '0x'
+  for (let i = 0; i < r.length; i++) {
+    const [a, b, ex] = r[i]
+    const last = i === r.length - 1
+    const stepMin = last ? minOut : ((await amountOut(ex, a, b, amt)) * (10_000n - slippageBps)) / 10_000n
+    await ensureAllowance(TOKENS[a].address, MENTO_BROKER, amt)
+    const before = last ? 0n : await balanceOf(TOKENS[b].address)
+    hash = await sendTagged({
+      to: MENTO_BROKER,
+      data: encodeFunctionData({ abi: brokerAbi, functionName: 'swapIn', args: [ex.provider, ex.id, TOKENS[a].address, TOKENS[b].address, amt, stepMin] }),
+    })
+    if (!last) {
+      const { blockNumber } = await pub.getTransactionReceipt({ hash })
+      amt = (await balanceOf(TOKENS[b].address, blockNumber)) - before
+    }
+  }
+  return hash
+}

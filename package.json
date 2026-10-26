@@ -1,0 +1,28 @@
+{
+  "name": "midas-arb",
+  "version": "2.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "new-wallet": "tsx src/new-wallet.ts",
+    "check": "tsx src/check.ts",
+    "desk": "tsx src/desk.ts",
+    "stats": "tsx src/stats.ts",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@celo/attribution-tags": "0.5.0",
+    "dotenv": "16.4.5",
+    "viem": "2.21.60"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "tsx": "4.19.2",
+    "typescript": "5.6.3"
+  },
+  "description": "Kiyoshi FX arbitrage on Celo, extended: Uniswap v3 + Textile FX + Mento, more pairs, safer execution",
+  "engines": {
+    "node": ">=20"
+  }
+}
