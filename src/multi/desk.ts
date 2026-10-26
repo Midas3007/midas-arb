@@ -162,6 +162,7 @@ async function runChain(p: ChainProfile) {
   // Drop exchanges whose contracts are not on this chain (wrong address = no code).
   const venues: ReturnType<typeof venueFor>[] = []
   try { await pub.getBlockNumber() } catch (e) { say(`cannot reach ${p.key} (${errMsg(e)}); set ${p.key.toUpperCase()}_RPCS in .env`); return }
+  if (process.env.MULTI_MAJORS === '1') for (const m of p.majors) if (!p.corridors.includes(m)) p.corridors.push(m)
   // Check each gold / local-currency / RWA token: use it only if the address really is that token.
   const extraNames = Object.keys(p.extras).filter((k) => !T[k])
   const meta = await pub.multicall({
@@ -310,7 +311,7 @@ async function runChain(p: ChainProfile) {
     if (LIVE) { const pnl = await execute(best); say(`  result: ${pnl === null ? 'incomplete (leftover managed by flatten)' : (pnl >= 0 ? '+' : '') + pnl.toFixed(4)}`) }
   }
 
-  say(`${LIVE ? 'LIVE' : 'DRY RUN'} | wallet ${account.address} | ${venues.map((v) => v.name).join(' + ')} | max $${MAX_TRADE_USD}`)
+  say(`${LIVE ? 'LIVE' : 'DRY RUN'}${T.USDT.address.toLowerCase() === '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' ? ' | cash token: USDC (shown as USDT)' : ''} | wallet ${account.address} | ${venues.map((v) => v.name).join(' + ')} | max $${MAX_TRADE_USD}`)
   while (!stopping) {
     inCycle++
     try { await cycle() } catch (e) { say(`cycle error: ${errMsg(e)}`) }

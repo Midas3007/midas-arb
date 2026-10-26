@@ -82,11 +82,13 @@ If `git pull` says *Please commit your changes or stash them*, run `git stash` f
 ## BSC and Polygon (multi-chain desk)
 
 A separate bot with its **own wallet** that trades USDT round trips between two exchanges on each chain
-(BSC: PancakeSwap + Uniswap; Polygon: Uniswap + SushiSwap). It never touches the Celo wallet.
+(BSC: PancakeSwap + Uniswap; Polygon: Uniswap + SushiSwap; Base: Uniswap + PancakeSwap + SushiSwap, trading
+against USDC). It never touches the Celo wallet. It focuses on local currencies, euro/franc/pound stablecoins and
+gold; big tokens (BNB, ETH, BTC) are skipped unless `MULTI_MAJORS=1`.
 
 1. `npm run new-wallet`, put the key in `.env` as `MULTI_PRIVATE_KEY=` (keep `MULTI_LIVE=0`).
-2. Fund that wallet with USDT plus a little gas: **BNB** on BSC, **POL** on Polygon.
-3. Dry run: `npm run multi -- bsc` or `npm run multi -- polygon`, or both at once: `npm run multi -- bsc polygon`.
+2. Fund that wallet with USDT plus a little gas: **BNB** on BSC, **POL** on Polygon, **ETH** on Base (Base uses **USDC** instead of USDT).
+3. Dry run: `npm run multi -- bsc` or `npm run multi -- polygon`, or several at once: `npm run multi -- bsc polygon base`.
 4. Live: set `MULTI_LIVE=1`. Each chain keeps its own files in `data-bsc/` and `data-polygon/`.
 
 The Celo desk (`npm run desk`) and this one can run at the same time in two Termux sessions.

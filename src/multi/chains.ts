@@ -3,7 +3,7 @@
 // Addresses are checked on startup: an exchange whose contracts are missing is dropped with a message.
 // Add tokens without code changes: BSC_TOKENS=SYMBOL:0xaddress:decimals,... (POLYGON_TOKENS for Polygon).
 import type { Address, Chain } from 'viem'
-import { bsc, polygon } from 'viem/chains'
+import { base, bsc, polygon } from 'viem/chains'
 
 export type Dex = {
   name: string
@@ -22,7 +22,8 @@ export type ChainProfile = {
   native: string // symbol of the wrapped gas token in `tokens`, used to price gas
   hubs: string[] // tokens a route may pass through
   tokens: Record<string, Token> // must include USDT
-  corridors: string[] // tokens traded against USDT
+  corridors: string[] // tokens traded against USDT (local currencies and gold are added from `extras`)
+  majors: string[] // big tokens (BNB, ETH, BTC...): heavily arbitraged by fast bots, so only scanned with MULTI_MAJORS=1
   // Gold, local-currency and other real-world-asset tokens. Addresses are checked on startup: a token is used
   // only if its on-chain symbol matches one of `expect` (decimals are read on-chain), otherwise it is skipped.
   extras: Record<string, { address: Address; expect: string[] }>
@@ -38,6 +39,7 @@ const list = (env: string | undefined, dflt: string[]) => (env ? env.split(',').
 
 const bscExtra = extraTokens(process.env.BSC_TOKENS)
 const polyExtra = extraTokens(process.env.POLYGON_TOKENS)
+const baseExtra = extraTokens(process.env.BASE_TOKENS)
 
 export const CHAINS: Record<string, ChainProfile> = {
   bsc: {
@@ -56,7 +58,8 @@ export const CHAINS: Record<string, ChainProfile> = {
       CAKE: { address: '0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82', decimals: 18 },
       ...bscExtra,
     },
-    corridors: list(process.env.BSC_CORRIDORS, ['USDC', 'FDUSD', 'WBNB', 'ETH', 'BTCB', 'CAKE', ...Object.keys(bscExtra)]),
+    corridors: list(process.env.BSC_CORRIDORS, ['USDC', 'FDUSD', ...Object.keys(bscExtra)]),
+    majors: ['WBNB', 'ETH', 'BTCB', 'CAKE'],
     extras: {
       XAUT: { address: '0x21cAef8A43163Eea865baeE23b9C2E327696A3bf', expect: ['XAUT', 'XAUT0'] },   // Tether Gold
       PAXG: { address: '0x7950865a9140cB519342433146Ed5b40c6F210f7', expect: ['PAXG'] },            // Paxos Gold
@@ -90,7 +93,8 @@ export const CHAINS: Record<string, ChainProfile> = {
       BRZ: { address: '0x4eD141110F6EeeAbA9A1df36d8c26f684d2475Dc', decimals: 18 },
       ...polyExtra,
     },
-    corridors: list(process.env.POLYGON_CORRIDORS, ['USDC', 'USDC.e', 'DAI', 'WPOL', 'WETH', 'WBTC', 'BRZ', ...Object.keys(polyExtra)]),
+    corridors: list(process.env.POLYGON_CORRIDORS, ['USDC', 'USDC.e', 'DAI', 'BRZ', ...Object.keys(polyExtra)]),
+    majors: ['WPOL', 'WETH', 'WBTC'],
     extras: {
       PAXG: { address: '0x553d3D295e0f695B9228246232eDF400ed3560B5', expect: ['PAXG'] },            // Paxos Gold
       XAUT: { address: '0xF1815bd50389c46847f0Bda824eC8da914045D14', expect: ['XAUT', 'XAUT0'] },   // Tether Gold
@@ -109,6 +113,42 @@ export const CHAINS: Record<string, ChainProfile> = {
         router: '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45', routerStyle: '02', fees: [100, 500, 3000, 10000], gas: 180_000 },
       { name: 'sushi', factory: '0x917933899c6a5F8E37F31E19f92CdBFF7e8FF0e2', quoter: '0xb1E835Dc2785b52265711e17fCCb0fd018226a6e',
         router: '0x0aF89E1620b96170e2a9D0b68fEebb767eD044c3', routerStyle: 'v1', fees: [100, 500, 3000, 10000], gas: 190_000 },
+    ],
+  },
+  base: {
+    // Base trades mostly against USDC, so the desk's cash token ("USDT" inside the code) is USDC here.
+    key: 'base',
+    chain: base,
+    rpcs: list(process.env.BASE_RPCS, ['https://mainnet.base.org', 'https://base.publicnode.com', 'https://base.llamarpc.com']),
+    native: 'WETH',
+    hubs: ['WETH', 'USDbC'],
+    tokens: {
+      USDT: { address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6 }, // USDC (cash token on Base)
+      USDbC: { address: '0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA', decimals: 6 },
+      'USDT.b': { address: '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2', decimals: 6 },
+      WETH: { address: '0x4200000000000000000000000000000000000006', decimals: 18 },
+      cbBTC: { address: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', decimals: 8 },
+      ...baseExtra,
+    },
+    corridors: list(process.env.BASE_CORRIDORS, ['USDbC', 'USDT.b', ...Object.keys(baseExtra)]),
+    majors: ['WETH', 'cbBTC'],
+    extras: {
+      EURC: { address: '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42', expect: ['EURC'] },            // Euro (Circle)
+      cNGN: { address: '0x46C85152bFe9f96829aA94755D9f915F9B10EF5F', expect: ['CNGN'] },            // Nigerian naira
+      IDRX: { address: '0x18Bc5bcC660cf2B9cE3cd51a404aFe1a0cBD3C22', expect: ['IDRX'] },            // Indonesian rupiah
+      CADC: { address: '0x043eB4B75d0805c43D7C834902E335621983Cf03', expect: ['CADC'] },            // Canadian dollar
+      BRZ: { address: '0xE9185Ee218cae427aF7B9764A011bb89FeA761B4', expect: ['BRZ'] },              // Brazilian real
+      ZARP: { address: '0xb755506531786C8aC63B756BaB1ac387bACB0C04', expect: ['ZARP'] },            // South African rand
+      MXNe: { address: '0x269caE7Dc59803e5C596c95756faEeBb6030E0aF', expect: ['MXNE'] },            // Mexican peso
+      XAUT: { address: '0x68749665FF8D2d112Fa859AA293F07A622782F38', expect: ['XAUT', 'XAUT0'] },   // Tether Gold
+    },
+    dexes: [
+      { name: 'uniswap', factory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD', quoter: '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a',
+        router: '0x2626664c2603336E57B271c5C0b26F421741e481', routerStyle: '02', fees: [100, 500, 3000, 10000], gas: 180_000 },
+      { name: 'pancake', factory: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', quoter: '0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997',
+        router: '0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86', routerStyle: '02', fees: [100, 500, 2500, 10000], gas: 180_000 },
+      { name: 'sushi', factory: '0xc35DADB65012eC5796536bD9864eD8773aBc74C4', quoter: '0xb1E835Dc2785b52265711e17fCCb0fd018226a6e',
+        router: '0xFB7eF66a7e61224DD6FcD0D7d9C3be5C8B049b9f', routerStyle: 'v1', fees: [100, 500, 3000, 10000], gas: 190_000 },
     ],
   },
 }
