@@ -18,6 +18,12 @@ export async function ensureAllowance(token: Address, spender: Address, required
   // APPROVAL_MODE: capped (default) approves 4 trades' worth, exact approves only this trade, unlimited is the old behaviour.
   const mode = process.env.APPROVAL_MODE ?? 'capped'
   await approve(mode === 'unlimited' ? maxUint256 : mode === 'exact' ? required : required * 4n)
+  // Wait until the RPC shows the new allowance, so the swap that follows does not fail with STF on a lagging node.
+  for (let i = 0; i < 10; i++) {
+    const now = await pub.readContract({ address: token, abi: erc20Abi, functionName: 'allowance', args: [account.address, spender] }).catch(() => 0n)
+    if (now >= required) return
+    await new Promise((r) => setTimeout(r, 1000))
+  }
 }
 
 // One tagged RFQ swap on Textile. sellAmount in atomic units.

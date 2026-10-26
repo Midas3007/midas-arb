@@ -63,8 +63,15 @@ export async function bestSize(route: Route, minSize: bigint, maxSize: bigint, g
   return [best, ...refined].sort((a, b) => b.net - a.net)[0]
 }
 
+// The smallest trade gets the best price (no price impact), so a route that loses before gas at minSize loses at
+// every size: one quote rules it out, and only routes with a positive edge get the full size search.
+// This cuts the RPC work of a scan by most of it.
 export async function scanRoutes(routes: Route[], minSize: bigint, maxSize: bigint, gasUsdFor: (r: Route) => number): Promise<Opp[]> {
-  const found = await Promise.all(routes.map((r) => bestSize(r, minSize, maxSize, gasUsdFor(r)).catch(() => null)))
+  const found = await Promise.all(routes.map(async (r) => {
+    const probe = await evaluate(r, minSize, gasUsdFor(r)).catch(() => null)
+    if (!probe || probe.edge <= 0) return probe
+    return bestSize(r, minSize, maxSize, gasUsdFor(r)).catch(() => probe)
+  }))
   return (found.filter(Boolean) as Opp[]).sort((a, b) => b.net - a.net)
 }
 

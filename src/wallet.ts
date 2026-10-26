@@ -23,7 +23,14 @@ export let lastTxBlock = 0n
 export async function sendTaggedReceipt(tx: { to: Address; data?: Hex; value?: bigint }): Promise<TransactionReceipt> {
   const data = concat([tx.data ?? '0x', TAG_SUFFIX])
   // Simulate first: a call that would revert throws here (with its reason) instead of costing gas on-chain.
-  await pub.call({ account, to: tx.to, data, value: tx.value ?? 0n })
+  // Public RPCs are load-balanced, and a node a block behind has not seen our previous transaction (an approval,
+  // or the first leg's tokens), so a revert right after one of our own transactions is retried before it counts.
+  for (let i = 0; ; i++) {
+    try { await pub.call({ account, to: tx.to, data, value: tx.value ?? 0n }); break } catch (e) {
+      if (i >= 4 || lastTxBlock === 0n) throw e
+      await new Promise((r) => setTimeout(r, 1500))
+    }
+  }
   const hash = await wallet.sendTransaction({ to: tx.to, data, value: tx.value ?? 0n })
   const receipt = await pub.waitForTransactionReceipt({ hash, timeout: 120_000 })
   if (receipt.status !== 'success') throw new Error(`Transaction reverted: ${hash}`)

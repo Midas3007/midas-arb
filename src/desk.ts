@@ -130,13 +130,14 @@ async function discover() {
 }
 
 // ---------- gas ----------
-let celoUsd = 0, celoUsdAt = 0
+let celoUsd = 0, celoUsdAt = 0, gasPrice = 25_000_000_000n, gasPriceAt = 0 // gas price read at most every 15s, not once per route
 async function gasUsd(units: number) {
   if (Date.now() - celoUsdAt > 10 * 60_000) {
     const q = await uniQuote('CELO', 'USDT', 10n ** 18n).catch(() => null)
     if (q) { celoUsd = usd(q.out); celoUsdAt = Date.now() }
   }
-  const price = await pub.getGasPrice().catch(() => 25_000_000_000n)
+  if (Date.now() - gasPriceAt > 15_000) { gasPrice = await pub.getGasPrice().catch(() => gasPrice); gasPriceAt = Date.now() }
+  const price = gasPrice
   return Number(formatUnits(price * BigInt(units), 18)) * celoUsd
 }
 
@@ -324,7 +325,7 @@ const stop = () => {
 }
 process.on('SIGTERM', stop)
 process.on('SIGINT', stop) // Ctrl+C in Termux: never abandon a trade between its two legs
-const STARTUP_DELAY_MS = Number(process.env.STARTUP_DELAY_SEC ?? (LIVE ? '60' : '0')) * 1000
+const STARTUP_DELAY_MS = Number(process.env.STARTUP_DELAY_SEC ?? (LIVE ? '10' : '0')) * 1000
 if (STARTUP_DELAY_MS > 0) {
   console.log('Waiting ' + STARTUP_DELAY_MS / 1000 + 's before trading so any previous copy can finish and shut down')
   await sleep(STARTUP_DELAY_MS)

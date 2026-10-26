@@ -104,3 +104,12 @@ test('pending inventory survives a restart and merges lots', () => {
   b.clear('cNGN')
   assert.equal(new PendingStore(file).get('cNGN'), undefined)
 })
+
+test('scanRoutes quotes a losing route once instead of running the size search', async () => {
+  let calls = 0
+  const counted = (v: Venue): Venue => ({ ...v, quote: (a, b, c) => { calls++; return v.quote(a, b, c) } })
+  const losing = { X: 'wBRL' as TokenKey, buy: counted(rfq('a', 4.9)), sell: rfq('b', 5) }
+  const [o] = await scanRoutes([losing], $(2), $(70), () => 0)
+  assert.ok(o.edge < 0)
+  assert.equal(calls, 1)
+})
