@@ -339,6 +339,8 @@ async function runChain(p: ChainProfile) {
     const opps = await scanRoutes(live, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0)
     for (const o of opps.slice(0, 5)) say(`  ${routeName(o.route).padEnd(24)} $${usd(o.size).toFixed(2).padStart(6)} -> $${usd(o.out).toFixed(4)}  net ${o.net >= 0 ? '+' : ''}${o.net.toFixed(4)}`)
     const best = opps[0]
+    // Every scan's best route is saved (dry run and live) so npm run multi-stats can show how close gaps came.
+    if (best) appendFileSync(`${dir}/scans.jsonl`, JSON.stringify({ ts: new Date().toISOString(), route: routeName(best.route), sizeUsd: usd(best.size), net: best.net, would: best.net >= MIN_EDGE_USD, live: LIVE }) + '\n')
     if (!best || best.net < MIN_EDGE_USD) { say(`  no trade (${live.length} routes)  USDT $${usd(cash).toFixed(2)}  today ${realized >= 0 ? '+' : ''}${realized.toFixed(4)}`); return }
     say(`  >> ${LIVE ? 'TRADING' : 'would trade'}: ${routeName(best.route)} $${usd(best.size).toFixed(2)}, expected +$${best.net.toFixed(4)}`)
     if (LIVE) { const pnl = await execute(best); say(`  result: ${pnl === null ? 'incomplete (leftover managed by flatten)' : (pnl >= 0 ? '+' : '') + pnl.toFixed(4)}`) }

@@ -8,6 +8,7 @@
     "check": "tsx src/check.ts",
     "desk": "tsx src/desk.ts",
     "multi": "tsx src/multi/desk.ts",
+    "multi-stats": "tsx src/multi/stats.ts",
     "stats": "tsx src/stats.ts",
     "mento": "tsx src/mento-check.ts",
     "balances": "tsx src/balances.ts",
