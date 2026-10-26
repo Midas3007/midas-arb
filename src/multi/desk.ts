@@ -162,6 +162,27 @@ async function runChain(p: ChainProfile) {
   // Drop exchanges whose contracts are not on this chain (wrong address = no code).
   const venues: ReturnType<typeof venueFor>[] = []
   try { await pub.getBlockNumber() } catch (e) { say(`cannot reach ${p.key} (${errMsg(e)}); set ${p.key.toUpperCase()}_RPCS in .env`); return }
+  // Check each gold / local-currency / RWA token: use it only if the address really is that token.
+  const extraNames = Object.keys(p.extras).filter((k) => !T[k])
+  const meta = await pub.multicall({
+    allowFailure: true,
+    contracts: extraNames.flatMap((k) => [
+      { address: p.extras[k].address, abi: erc20Abi, functionName: 'symbol' } as const,
+      { address: p.extras[k].address, abi: erc20Abi, functionName: 'decimals' } as const,
+    ]),
+  }).catch(() => [])
+  const added: string[] = [], skipped: string[] = []
+  extraNames.forEach((k, i) => {
+    const sym = meta[2 * i], dec = meta[2 * i + 1]
+    const ok = sym?.status === 'success' && dec?.status === 'success' && p.extras[k].expect.includes(String(sym.result).toUpperCase().replace(/[^A-Z0-9]/g, ''))
+    if (!ok) { skipped.push(k); return }
+    T[k] = { address: p.extras[k].address, decimals: Number(dec!.result) }
+    if (!p.corridors.includes(k)) p.corridors.push(k)
+    added.push(k)
+  })
+  if (added.length) say(`extra tokens: ${added.join(' ')}`)
+  if (skipped.length) say(`not found on ${p.key} (skipped): ${skipped.join(' ')}`)
+
   for (const d of p.dexes) {
     const codes = await Promise.all([d.factory, d.quoter, d.router].map((a) => pub.getCode({ address: a }).catch(() => undefined)))
     if (codes.every((c) => c && c !== '0x')) venues.push(venueFor(d))

@@ -23,6 +23,9 @@ export type ChainProfile = {
   hubs: string[] // tokens a route may pass through
   tokens: Record<string, Token> // must include USDT
   corridors: string[] // tokens traded against USDT
+  // Gold, local-currency and other real-world-asset tokens. Addresses are checked on startup: a token is used
+  // only if its on-chain symbol matches one of `expect` (decimals are read on-chain), otherwise it is skipped.
+  extras: Record<string, { address: Address; expect: string[] }>
   dexes: Dex[]
 }
 
@@ -54,6 +57,15 @@ export const CHAINS: Record<string, ChainProfile> = {
       ...bscExtra,
     },
     corridors: list(process.env.BSC_CORRIDORS, ['USDC', 'FDUSD', 'WBNB', 'ETH', 'BTCB', 'CAKE', ...Object.keys(bscExtra)]),
+    extras: {
+      XAUT: { address: '0x21cAef8A43163Eea865baeE23b9C2E327696A3bf', expect: ['XAUT', 'XAUT0'] },   // Tether Gold
+      PAXG: { address: '0x7950865a9140cB519342433146Ed5b40c6F210f7', expect: ['PAXG'] },            // Paxos Gold
+      cNGN: { address: '0xa8AEA66B361a8d53e8865c62D142167Af28Af058', expect: ['CNGN'] },            // Nigerian naira
+      BRZ: { address: '0x71be881e9C5d4465B3FfF61e89c6f3651E69B5bb', expect: ['BRZ'] },              // Brazilian real
+      TRYB: { address: '0xC1fdbed7Dac39caE2CcC0748f7a80dC446F6a594', expect: ['TRYB'] },            // Turkish lira
+      IDRX: { address: '0x649a2DA7B28E0D54c13D5eFf95d3A660652742cC', expect: ['IDRX'] },            // Indonesian rupiah
+      EURI: { address: '0x9d1A7A3191102e9F900Faa10540837ba84dCBAE7', expect: ['EURI'] },            // Euro
+    },
     dexes: [
       { name: 'pancake', factory: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', quoter: '0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997',
         router: '0x13f4EA83D0bd40E75C8222255bc855a974568Dd4', routerStyle: '02', fees: [100, 500, 2500, 10000], gas: 180_000 },
@@ -79,6 +91,19 @@ export const CHAINS: Record<string, ChainProfile> = {
       ...polyExtra,
     },
     corridors: list(process.env.POLYGON_CORRIDORS, ['USDC', 'USDC.e', 'DAI', 'WPOL', 'WETH', 'WBTC', 'BRZ', ...Object.keys(polyExtra)]),
+    extras: {
+      PAXG: { address: '0x553d3D295e0f695B9228246232eDF400ed3560B5', expect: ['PAXG'] },            // Paxos Gold
+      XAUT: { address: '0xF1815bd50389c46847f0Bda824eC8da914045D14', expect: ['XAUT', 'XAUT0'] },   // Tether Gold
+      XSGD: { address: '0xDC3326e71D45186F113a2F448984CA0e8D201995', expect: ['XSGD'] },            // Singapore dollar
+      EURS: { address: '0xE111178A87A3BFf0c8d18DECBa5798827539Ae99', expect: ['EURS'] },            // Euro (Stasis)
+      EURe: { address: '0x18ec0A6E18E5bc3784fDd3a3634b31245ab704F6', expect: ['EURE'] },            // Euro (Monerium)
+      jEUR: { address: '0x4e3Decbb3645551B8A19f0eA1678079FCB33fB4c', expect: ['JEUR'] },
+      jCHF: { address: '0xbD1463F02f61676d53fd183C2B19282BFF93D099', expect: ['JCHF'] },            // Swiss franc
+      jGBP: { address: '0x767058F11800FBA6A682E73A6e79ec5eB74Fac8c', expect: ['JGBP'] },            // British pound
+      TRYB: { address: '0x4Fb71290Ac171E1d144F7221D882BECAc7196EB5', expect: ['TRYB'] },            // Turkish lira
+      IDRX: { address: '0x649a2DA7B28E0D54c13D5eFf95d3A660652742cC', expect: ['IDRX'] },            // Indonesian rupiah
+      cNGN: { address: '0x52828daa48C1a9A06F37500882b42daf0bE04C3B', expect: ['CNGN'] },            // Nigerian naira
+    },
     dexes: [
       { name: 'uniswap', factory: '0x1F98431c8aD98523631AE4a59f267346ea31F984', quoter: '0x61fFE014bA17989E743c5F6cB21bF9697530B21e',
         router: '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45', routerStyle: '02', fees: [100, 500, 3000, 10000], gas: 180_000 },
