@@ -184,7 +184,8 @@ async function flatten() {
     const bal = await balanceOf(TOKENS[X].address)
     if (bal === 0n) { pending.clear(X); continue }
     const exit = await bestExit(X, bal)
-    if (!exit || usd(exit.out) < 1) continue // dust, or below venue minimums
+    if (!exit) { console.log(`  ${amt(X, bal).toFixed(4)} ${X} in wallet, but no venue will quote it right now (not counted in equity)`); continue }
+    if (usd(exit.out) < 1) continue // dust, or below venue minimums
 
     let lot = pending.get(X)
     if (!lot) { pending.add(X, exit.out); lot = pending.get(X)! } // first sight of an unknown balance: start the clock at today's value
