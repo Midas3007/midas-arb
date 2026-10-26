@@ -2,15 +2,17 @@
 // Run: npm run mento
 import { formatUnits } from 'viem'
 import { mentoDiscover, mentoListing, mentoQuote, mentoRoute } from './mento.js'
-import { CORRIDORS, MENTO_BROKER, TOKENS } from './config.js'
+import { CORRIDORS, CORRIDORS_FIXED, MENTO_BROKER, TOKENS } from './config.js'
 
 console.log(`Mento Broker ${MENTO_BROKER}`)
-let known = 0
-try { known = await mentoDiscover() } catch (e) {
+let known = 0, added: string[] = []
+try { ({ count: known, added } = await mentoDiscover()) } catch (e) {
   console.log(`Could not read the Broker: ${(e as Error).message.split('\n')[0]}`)
   process.exit(1)
 }
 console.log(`${mentoListing.length} exchanges listed, ${known} between tokens the bot knows:`)
+if (added.length) console.log(`New currencies found on Mento: ${added.join(' ')}`)
+if (!CORRIDORS_FIXED) for (const k of added) if (!CORRIDORS.includes(k)) CORRIDORS.push(k)
 for (const ex of mentoListing) console.log(`  ${ex.assets.map((a) => (a.startsWith('0x') ? `unknown ${a}` : a)).join(' / ')}`)
 
 console.log('\n$5 round trip USDT -> X -> USDT on Mento:')

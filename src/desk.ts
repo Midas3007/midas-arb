@@ -7,7 +7,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { formatUnits, parseUnits } from 'viem'
-import { ATTRIBUTION_TAG, CORRIDORS, TOKENS, type TokenKey } from './config.js'
+import { ATTRIBUTION_TAG, CORRIDORS, CORRIDORS_FIXED, TOKENS, type TokenKey } from './config.js'
 import { account, pub, lastTxBlock } from './wallet.js'
 import { balanceOf } from './swap.js'
 import { uniDiscover, uniQuote } from './uniswap.js'
@@ -98,10 +98,19 @@ let routes: Route[] = []
 let discoveredAt = 0
 async function discover() {
   const tokens = [...new Set<TokenKey>([...CORRIDORS])]
-  const [pools, mentoExchanges] = await Promise.all([
+  let [pools, mento] = await Promise.all([
     uniDiscover(tokens).catch((e) => { console.error('  uniswap discovery:', errMsg(e)); return 0 }),
-    ALL_VENUES.some((v) => v.name === 'mento') ? mentoDiscover().catch((e) => { console.error('  mento discovery:', errMsg(e)); return 0 }) : 0,
+    ALL_VENUES.some((v) => v.name === 'mento')
+      ? mentoDiscover().catch((e) => { console.error('  mento discovery:', errMsg(e)); return { count: 0, added: [] as TokenKey[] } })
+      : { count: 0, added: [] as TokenKey[] },
   ])
+  // New Mento currencies join the scan (unless CORRIDORS is set), and Uniswap is checked for them too.
+  const fresh = CORRIDORS_FIXED ? [] : mento.added.filter((k) => !tokens.includes(k))
+  if (fresh.length) {
+    console.log(`  new currencies from Mento: ${fresh.join(' ')}`)
+    tokens.push(...fresh); CORRIDORS.push(...fresh)
+    pools = await uniDiscover(tokens).catch(() => pools)
+  }
   const supported = new Map<string, Set<TokenKey>>()
   await Promise.all(ALL_VENUES.map(async (v) => {
     const set = new Set<TokenKey>()
@@ -115,7 +124,7 @@ async function discover() {
   discoveredAt = Date.now()
   status.routes = routes.map(routeName)
   const per = ALL_VENUES.map((v) => `${v.name}: ${[...(supported.get(v.name) ?? [])].join(' ') || '-'}`).join(' | ')
-  console.log(`  discovery: ${pools} uniswap pools, ${mentoExchanges} mento exchanges, ${routes.length} routes`)
+  console.log(`  discovery: ${pools} uniswap pools, ${mento.count} mento exchanges, ${routes.length} routes`)
   console.log(`  ${per}`)
   log({ event: 'discovery', routes: status.routes })
 }

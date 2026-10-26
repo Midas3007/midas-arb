@@ -21,7 +21,8 @@ export const UNI = {
 // Mento Broker (Celo mainnet). Exchanges and their ids are read from it on-chain at startup.
 export const MENTO_BROKER = (process.env.MENTO_BROKER ?? '0x777A8255cA72412f0d706dc03C9D1987306B4CaD') as Address
 
-export const TOKENS = {
+// Known tokens. Discovery adds every other token Mento trades (symbol and decimals read on-chain).
+export const TOKENS: Record<string, { address: Address; decimals: number }> = {
   USDT: { address: '0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e' as Address, decimals: 6 },
   USDC: { address: '0xcebA9300f2b948710d2653dD7B07f33A8B32118C' as Address, decimals: 6 },
   CELO: { address: '0x471EcE3750Da237f93B8E339c536989b8978a438' as Address, decimals: 18 },
@@ -37,15 +38,17 @@ export const TOKENS = {
   PHPm: { address: '0x105d4A9306D2E55a71d2Eb95B81553AE1dC20d7B' as Address, decimals: 18 },
   COPm: { address: '0x8A567e2aE79CA692Bd748aB832081C45de4041eA' as Address, decimals: 18 },
   GHSm: { address: '0xfAeA5F3404bbA20D3cc2f8C4B0A888F55a3c7313' as Address, decimals: 18 },
-} as const
+}
 
-export type TokenKey = keyof typeof TOKENS
+export type TokenKey = string
 
 // Tokens the desk tries to trade against USDT. Discovery keeps only those at least two venues can trade.
 // Override with CORRIDORS=wBRL,BRLm,... in .env.
 const ALL_CORRIDORS: TokenKey[] = ['wBRL', 'wARS', 'cNGN', 'USDm', 'EURm', 'BRLm', 'KESm', 'XOFm', 'PHPm', 'COPm', 'GHSm', 'USDC']
-export const CORRIDORS: TokenKey[] = process.env.CORRIDORS
-  ? (process.env.CORRIDORS.split(',').map((s) => s.trim()).filter((s) => s in TOKENS) as TokenKey[])
+// Override with CORRIDORS=wBRL,BRLm,... in .env; without it, Mento currencies found at discovery are added too.
+export const CORRIDORS_FIXED = !!process.env.CORRIDORS
+export const CORRIDORS: TokenKey[] = CORRIDORS_FIXED
+  ? process.env.CORRIDORS!.split(',').map((s) => s.trim()).filter((s) => s in TOKENS)
   : ALL_CORRIDORS
 
 // Tokens a Uniswap route may pass through when a token has no direct pool with USDT.

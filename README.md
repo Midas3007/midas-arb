@@ -9,7 +9,7 @@ author's blessing. Kiyoshi compared **Uniswap v3** and **Textile FX** on three c
 | Area | Kiyoshi | Midas Arb |
 |---|---|---|
 | Venues | Uniswap, Textile | Uniswap, Textile, **Mento** (any buy venue x any sell venue) |
-| Currencies | wBRL, wARS, cNGN | + USDm, EURm, BRLm, KESm, XOFm, PHPm, COPm, GHSm, USDC. Discovery keeps whatever at least two venues can trade |
+| Currencies | wBRL, wARS, cNGN | + USDm, EURm, BRLm, KESm, XOFm, PHPm, COPm, GHSm, USDC, plus **every other currency Mento trades** (found on-chain automatically). Discovery keeps whatever at least two venues can trade |
 | Uniswap routing | direct pool only | direct, or one hop through USDC / USDm / CELO |
 | Trade size | 100%, 50%, 25% of max | 6 sizes spread from min to max, then refined around the best |
 | Profit check | before gas | **after gas** (live gas price x CELO price) |
@@ -74,6 +74,10 @@ Start with a small `MAX_TRADE_USD` and raise it once you have seen it trade clea
 **Updates later**: `cd ~/midas-arb && git pull && npm install`, then start it again.
 
 **Stats**: `npm run stats`.
+
+**Mento check** (read-only): `npm run mento` lists Mento's exchanges and tests a $5 round trip per currency.
+
+If `git pull` says *Please commit your changes or stash them*, run `git stash` first, then `git pull` again.
 
 ## Settings
 

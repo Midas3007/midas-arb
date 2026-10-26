@@ -2,7 +2,7 @@
 // Exchanges are read from the Broker on-chain, so only the Broker address is hard-coded. Mento pools are mostly
 // against USDm, so a USDT trade usually goes USDT -> USDm -> X; routes take the fewest swaps (at most 3) through
 // whatever exchanges exist.
-import { encodeFunctionData, parseAbi, type Hex } from 'viem'
+import { encodeFunctionData, erc20Abi, parseAbi, type Address, type Hex } from 'viem'
 import { pub, sendTagged } from './wallet.js'
 import { balanceOf, ensureAllowance } from './swap.js'
 import { MENTO_BROKER, TOKENS, type TokenKey } from './config.js'
@@ -21,13 +21,32 @@ const byAddress = new Map(Object.entries(TOKENS).map(([k, t]) => [t.address.toLo
 // Every exchange the Broker lists, including assets the bot does not know (for `npm run mento`).
 export const mentoListing: { provider: string; id: Hex; assets: string[] }[] = []
 
-// Reads every exchange from the Broker. Returns how many involve tokens the bot knows.
+// A token Mento trades that the bot does not know yet: add it to TOKENS under its on-chain symbol.
+async function learn(address: Address): Promise<TokenKey | undefined> {
+  try {
+    const [symbol, decimals] = await Promise.all([
+      pub.readContract({ address, abi: erc20Abi, functionName: 'symbol' }),
+      pub.readContract({ address, abi: erc20Abi, functionName: 'decimals' }),
+    ])
+    if (!/^[A-Za-z0-9]{2,12}$/.test(symbol) || symbol in TOKENS) return undefined // odd or clashing name: skip
+    TOKENS[symbol] = { address, decimals }
+    byAddress.set(address.toLowerCase(), symbol)
+    return symbol
+  } catch { return undefined }
+}
+
+// Reads every exchange from the Broker, learning tokens the bot does not know yet.
+// Returns how many exchanges are usable and which tokens were newly added.
 export async function mentoDiscover() {
   exchanges.clear()
   mentoListing.length = 0
+  const added: TokenKey[] = []
   const providers = await pub.readContract({ address: MENTO_BROKER, abi: brokerAbi, functionName: 'getExchangeProviders' })
   for (const provider of providers) {
     const list = await pub.readContract({ address: provider, abi: providerAbi, functionName: 'getExchanges' }).catch(() => [])
+    for (const ex of list) for (const a of ex.assets) {
+      if (!byAddress.has(a.toLowerCase())) { const k = await learn(a); if (k) added.push(k) }
+    }
     for (const ex of list) {
       mentoListing.push({ provider, id: ex.exchangeId, assets: ex.assets.map((a) => byAddress.get(a.toLowerCase()) ?? a) })
       if (ex.assets.length !== 2) continue
@@ -35,7 +54,7 @@ export async function mentoDiscover() {
       if (a && b) exchanges.set(pairOf(a, b), { provider, id: ex.exchangeId })
     }
   }
-  return exchanges.size
+  return { count: exchanges.size, added }
 }
 
 // Fewest swaps from tin to tout over the known exchanges (breadth-first, at most 3 steps).
