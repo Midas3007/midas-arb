@@ -1,7 +1,7 @@
 // Read-only: shows what the bot sees on Mento and why each currency can or cannot be traded there.
 // Run: npm run mento
 import { formatUnits } from 'viem'
-import { mentoDiscover, mentoListing, mentoRoute } from './mento.js'
+import { mentoDiscover, mentoListing, mentoRoute, mentoRouteClosed } from './mento.js'
 import { uniDiscover } from './uniswap.js'
 import { ALL_VENUES } from './venues.js'
 import { CORRIDORS, CORRIDORS_FIXED, MENTO_BROKER, TOKENS } from './config.js'
@@ -25,6 +25,8 @@ for (const X of CORRIDORS) {
   const r = mentoRoute('USDT', X) ?? mentoRoute('USDm', X)
   if (!r) { console.log(`  ${X.padEnd(5)} no route`); continue }
   const path = [mentoRoute('USDT', X) ? 'USDT' : 'USDT >(uniswap)> USDm', ...r.map((s) => s[1])].join(' > ')
+  const closed = await mentoRouteClosed(mentoRoute('USDT', X) ? 'USDT' : 'USDm', X)
+  if (closed) { console.log(`  ${X.padEnd(5)} ${path}: CLOSED (${closed})`); continue }
   const mid = await mento.quote('USDT', X, 5_000_000n)
   if (!mid) { console.log(`  ${X.padEnd(5)} ${path}: quote failed (stale oracle, trading limit or paused)`); continue }
   const back = await mento.quote(X, 'USDT', mid)

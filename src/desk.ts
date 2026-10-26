@@ -224,6 +224,7 @@ async function execute(o: Opp): Promise<number | null> {
     tx1 = await buy.swap('USDT', X, o.size, withSlippage(o.mid))
   } catch (e) {
     cooldown.set(routeKey(o.route), Date.now() + COOLDOWN_MS)
+    console.error(`  leg 1 (${buy.name} buy ${X}) failed: ${errMsg(e)}`)
     log({ event: 'cycle', route: name, X, sizeUsd: usd(o.size), leg1: errMsg(e), pnl: null })
     return null
   }
@@ -240,6 +241,7 @@ async function execute(o: Opp): Promise<number | null> {
     return pnl
   } catch (e) {
     cooldown.set(routeKey(o.route), Date.now() + COOLDOWN_MS)
+    console.error(`  leg 2 (${sell.name} sell ${X}) failed: ${errMsg(e)}`)
     log({ event: 'cycle', route: name, X, sizeUsd: usd(o.size), tx1, leg2: errMsg(e), pnl: null })
     notify(`Kiyoshi: ${name} leg 2 failed (${errMsg(e).slice(0, 120)}). Holding ${amt(X, got).toFixed(4)} ${X}; the loss guard will sell it.`)
     return null

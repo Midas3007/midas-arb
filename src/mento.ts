@@ -12,7 +12,17 @@ const brokerAbi = parseAbi([
   'function getAmountOut(address exchangeProvider, bytes32 exchangeId, address tokenIn, address tokenOut, uint256 amountIn) view returns (uint256)',
   'function swapIn(address exchangeProvider, bytes32 exchangeId, address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOutMin) returns (uint256)',
 ])
-const providerAbi = parseAbi(['function getExchanges() view returns ((bytes32 exchangeId, address[] assets)[])'])
+const providerAbi = parseAbi([
+  'function getExchanges() view returns ((bytes32 exchangeId, address[] assets)[])',
+  'function getPoolExchange(bytes32 exchangeId) view returns ((address asset0, address asset1, address pricingModule, uint256 bucket0, uint256 bucket1, uint256 lastBucketUpdate, (uint256 spread, address referenceRateFeedID, uint256 referenceRateResetFrequency, uint256 minimumReports, uint256 stablePoolResetSize) config))',
+  'function breakerBox() view returns (address)',
+  'function sortedOracles() view returns (address)',
+])
+const breakerAbi = parseAbi(['function getRateFeedTradingMode(address rateFeedID) view returns (uint8)'])
+const oracleAbi = parseAbi([
+  'function isOldestReportExpired(address token) view returns (bool, address)',
+  'function numRates(address token) view returns (uint256)',
+])
 
 type Exchange = { provider: `0x${string}`; id: Hex }
 const exchanges = new Map<string, Exchange>()
@@ -83,6 +93,43 @@ export function mentoRoute(tin: TokenKey, tout: TokenKey): [TokenKey, TokenKey, 
 }
 const route = mentoRoute
 
+// Mento quotes keep working while a pair is closed: a circuit breaker has halted it, or its price feed is stale.
+// Swaps then revert, so a quote is only trusted when the pair is open. Checked at most every 30s per exchange.
+const OPEN_TTL_MS = 30_000
+const openCache = new Map<string, { at: number; p: Promise<string | null> }>()
+async function closedReason(ex: Exchange): Promise<string | null> {
+  const { config } = await pub.readContract({ address: ex.provider, abi: providerAbi, functionName: 'getPoolExchange', args: [ex.id] })
+  const feed = config.referenceRateFeedID
+  const [breaker, oracles] = await Promise.all([
+    pub.readContract({ address: ex.provider, abi: providerAbi, functionName: 'breakerBox' }),
+    pub.readContract({ address: ex.provider, abi: providerAbi, functionName: 'sortedOracles' }),
+  ])
+  const [mode, [expired], reports] = await Promise.all([
+    pub.readContract({ address: breaker, abi: breakerAbi, functionName: 'getRateFeedTradingMode', args: [feed] }),
+    pub.readContract({ address: oracles, abi: oracleAbi, functionName: 'isOldestReportExpired', args: [feed] }),
+    pub.readContract({ address: oracles, abi: oracleAbi, functionName: 'numRates', args: [feed] }),
+  ])
+  if (mode !== 0) return 'trading halted by circuit breaker'
+  if (expired) return 'price feed is stale'
+  if (reports < config.minimumReports) return 'not enough price reports'
+  return null
+}
+// null when open; otherwise why not. A check that cannot be read counts as closed (better to miss a trade).
+export function mentoClosed(ex: Exchange): Promise<string | null> {
+  const k = ex.id
+  const hit = openCache.get(k)
+  if (hit && Date.now() - hit.at < OPEN_TTL_MS) return hit.p
+  const p = closedReason(ex).catch((e) => `status unreadable (${String((e as Error).message ?? e).split('\n')[0].slice(0, 80)})`)
+  openCache.set(k, { at: Date.now(), p })
+  return p
+}
+export async function mentoRouteClosed(tin: TokenKey, tout: TokenKey): Promise<string | null> {
+  const r = route(tin, tout)
+  if (!r) return 'no route'
+  for (const [a, b, ex] of r) { const why = await mentoClosed(ex); if (why) return `${a}/${b}: ${why}` }
+  return null
+}
+
 const amountOut = (ex: Exchange, tin: TokenKey, tout: TokenKey, amt: bigint) =>
   pub.readContract({ address: MENTO_BROKER, abi: brokerAbi, functionName: 'getAmountOut', args: [ex.provider, ex.id, TOKENS[tin].address, TOKENS[tout].address, amt] })
 
@@ -90,6 +137,7 @@ const amountOut = (ex: Exchange, tin: TokenKey, tout: TokenKey, amt: bigint) =>
 export async function mentoQuote(tin: TokenKey, tout: TokenKey, amountIn: bigint): Promise<bigint | null> {
   const r = route(tin, tout)
   if (!r || amountIn <= 0n) return null
+  for (const [, , ex] of r) if (await mentoClosed(ex)) return null
   try {
     let amt = amountIn
     for (const [a, b, ex] of r) amt = await amountOut(ex, a, b, amt)
