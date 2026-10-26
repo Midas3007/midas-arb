@@ -4,7 +4,7 @@ import { pub } from './wallet.js'
 import { balanceOf, swap as textileSwap } from './swap.js'
 import { preview } from './textile.js'
 import { uniQuotePath, uniSwapPath } from './uniswap.js'
-import { mentoQuote, mentoSwap } from './mento.js'
+import { mentoQuote, mentoRoute, mentoSwap } from './mento.js'
 import { TOKENS, VENUES, type TokenKey } from './config.js'
 import type { Venue } from './engine.js'
 export type { Venue }
@@ -51,11 +51,43 @@ const textile: Venue = {
   },
 }
 
+// Mento has no USDT exchange: its pools are USDm against each local currency. When Mento has no path from USDT,
+// this venue enters and exits through USDm on Uniswap (USDT/USDm is a deep, cheap pool) and does the currency
+// leg on Mento. USDT <-> USDm itself is left to Uniswap.
+const HUB = 'USDm', HOP_SLIPPAGE_BPS = 30n
+const viaHub = (tin: TokenKey, tout: TokenKey) =>
+  !mentoRoute(tin, tout) && (tin === 'USDT' || tout === 'USDT') && tin !== HUB && tout !== HUB
+const hubSwap = async (tin: TokenKey, tout: TokenKey, amt: bigint, minOut: bigint, venueSwap: Venue['swap']) => {
+  const before = await balanceOf(TOKENS[tout].address)
+  const hash = await venueSwap(tin, tout, amt, minOut)
+  return { hash, got: await received(tout, before, hash) }
+}
+
 const mento: Venue = {
   name: 'mento',
-  gas: 300_000,
-  quote: mentoQuote,
-  swap: (tin, tout, amt, minOut) => mentoSwap(tin, tout, amt, minOut),
+  gas: 400_000,
+  async quote(tin, tout, amt) {
+    if (!viaHub(tin, tout)) return mentoQuote(tin, tout, amt)
+    if (tin === 'USDT') {
+      const hub = await uniswap.quote('USDT', HUB, amt)
+      return hub ? mentoQuote(HUB, tout, hub) : null
+    }
+    const hub = await mentoQuote(tin, HUB, amt)
+    return hub ? uniswap.quote(HUB, 'USDT', hub) : null
+  },
+  async swap(tin, tout, amt, minOut) {
+    if (!viaHub(tin, tout)) return mentoSwap(tin, tout, amt, minOut)
+    if (tin === 'USDT') {
+      const q = await uniswap.quote('USDT', HUB, amt)
+      if (!q) throw new Error('No Uniswap USDT -> USDm quote')
+      const { got } = await hubSwap('USDT', HUB, amt, (q * (10_000n - HOP_SLIPPAGE_BPS)) / 10_000n, uniswap.swap)
+      return mentoSwap(HUB, tout, got, minOut) // minOut is enforced on the final step
+    }
+    const q = await mentoQuote(tin, HUB, amt)
+    if (!q) throw new Error(`No Mento ${tin} -> USDm quote`)
+    const { got } = await hubSwap(tin, HUB, amt, (q * (10_000n - HOP_SLIPPAGE_BPS)) / 10_000n, mentoSwap)
+    return uniswap.swap(HUB, 'USDT', got, minOut)
+  },
 }
 
 // Identical quotes within a few seconds are served from memory. Routes share legs (the same Textile buy is the
