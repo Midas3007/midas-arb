@@ -79,6 +79,18 @@ Start with a small `MAX_TRADE_USD` and raise it once you have seen it trade clea
 
 If `git pull` says *Please commit your changes or stash them*, run `git stash` first, then `git pull` again.
 
+## BSC and Polygon (multi-chain desk)
+
+A separate bot with its **own wallet** that trades USDT round trips between two exchanges on each chain
+(BSC: PancakeSwap + Uniswap; Polygon: Uniswap + SushiSwap). It never touches the Celo wallet.
+
+1. `npm run new-wallet`, put the key in `.env` as `MULTI_PRIVATE_KEY=` (keep `MULTI_LIVE=0`).
+2. Fund that wallet with USDT plus a little gas: **BNB** on BSC, **POL** on Polygon.
+3. Dry run: `npm run multi -- bsc` or `npm run multi -- polygon`, or both at once: `npm run multi -- bsc polygon`.
+4. Live: set `MULTI_LIVE=1`. Each chain keeps its own files in `data-bsc/` and `data-polygon/`.
+
+The Celo desk (`npm run desk`) and this one can run at the same time in two Termux sessions.
+
 ## Settings
 
 All in `.env`; see `.env.example` for the full list with defaults. The ones you are most likely to change:

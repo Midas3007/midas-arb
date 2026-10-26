@@ -1,0 +1,314 @@
+// Multi-chain desk: USDT round trips between two Uniswap-v3-style exchanges on BSC and/or Polygon.
+// Run one chain or several at once in one terminal:  npm run multi -- bsc   |   npm run multi -- bsc polygon
+// Uses its OWN wallet (MULTI_PRIVATE_KEY) and its own switch (MULTI_LIVE=1); the Celo desk is never touched.
+// Trading logic (routes, size search, loss guard, kill switch) is the same tested code as the Celo desk.
+import 'dotenv/config'
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import {
+  concat, createPublicClient, createWalletClient, encodeFunctionData, encodePacked, erc20Abi, fallback, formatUnits,
+  http, parseAbi, parseUnits, zeroAddress, type Address, type Hex,
+} from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
+import { toDataSuffix } from '@celo/attribution-tags'
+import { buildRoutes, routeKey, routeName, scanRoutes, shouldSell, tradingAllowed, usdOf, type Opp, type Route, type Venue } from '../engine.js'
+import { PendingStore } from '../pending.js'
+import { notify } from '../notify.js'
+import { CHAINS, type ChainProfile, type Dex } from './chains.js'
+
+const LIVE = process.env.MULTI_LIVE === '1'
+const MAX_TRADE_USD = Number(process.env.MULTI_MAX_TRADE_USD ?? '20')
+const MIN_TRADE_USD = Number(process.env.MULTI_MIN_TRADE_USD ?? '2')
+const MIN_EDGE_USD = Number(process.env.MULTI_MIN_EDGE_USD ?? '0.02')
+const INTERVAL_MS = Number(process.env.MULTI_INTERVAL_SEC ?? '20') * 1000
+const MAX_DAILY_LOSS_USD = Number(process.env.MULTI_MAX_DAILY_LOSS_USD ?? '3')
+const MAX_FLATTEN_LOSS_BPS = 50, MAX_HOLD_MS = 30 * 60_000, COOLDOWN_MS = 5 * 60_000, SLIPPAGE_BPS = 30n
+
+const pk = process.env.MULTI_PRIVATE_KEY as Hex | undefined
+if (!pk) throw new Error('Set MULTI_PRIVATE_KEY in .env (make one with: npm run new-wallet). Use a NEW wallet, not the Celo one.')
+if (pk === process.env.AGENT_PRIVATE_KEY) throw new Error('MULTI_PRIVATE_KEY must be a different wallet from AGENT_PRIVATE_KEY.')
+const account = privateKeyToAccount(pk)
+const TAG = (process.env.ATTRIBUTION_TAG ? toDataSuffix(process.env.ATTRIBUTION_TAG) : '0x') as Hex
+
+const factoryAbi = parseAbi(['function getPool(address,address,uint24) view returns (address)'])
+const quoterAbi = parseAbi(['function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut, uint160[], uint32[], uint256)'])
+const router02Abi = parseAbi(['function exactInput((bytes path, address recipient, uint256 amountIn, uint256 amountOutMinimum)) payable returns (uint256)'])
+const routerV1Abi = parseAbi(['function exactInput((bytes path, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum)) payable returns (uint256)'])
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+const errMsg = (e: any) => String(e?.shortMessage ?? e?.message ?? e).split('\n')[0]
+
+async function runChain(p: ChainProfile) {
+  const tag = `[${p.key}]`
+  const say = (s: string) => console.log(`${tag} ${s}`)
+  const transport = fallback(p.rpcs.map((u) => http(u, { timeout: 15_000, retryCount: 2 })))
+  const pub = createPublicClient({ chain: p.chain, transport, batch: { multicall: true } })
+  const wallet = createWalletClient({ account, chain: p.chain, transport })
+  const dir = `data-${p.key}`
+  if (!existsSync(dir)) mkdirSync(dir)
+  const pending = new PendingStore(`${dir}/pending.json`)
+  const log = (o: object) => appendFileSync(`${dir}/trades.jsonl`, JSON.stringify({ ts: new Date().toISOString(), chain: p.key, ...o }) + '\n')
+  const T = p.tokens
+  const usdtDec = T.USDT.decimals
+  // The engine counts USDT in 6 decimals ($1 = 1e6). BSC USDT has 18, so USDT amounts are scaled at the edge.
+  const toRaw = (t: string, a: bigint) => (t === 'USDT' ? a * 10n ** BigInt(usdtDec - 6) : a)
+  const fromRaw = (t: string, a: bigint) => (t === 'USDT' ? a / 10n ** BigInt(usdtDec - 6) : a)
+  const usd = usdOf
+
+  // ---------- chain access ----------
+  let lastTxBlock = 0n
+  async function send(to: Address, data: Hex) {
+    const full = concat([data, TAG])
+    for (let i = 0; ; i++) {
+      try { await pub.call({ account, to, data: full }); break } catch (e) {
+        if (i >= 4 || lastTxBlock === 0n) throw e
+        await sleep(1500) // a load-balanced RPC node may not have seen our previous transaction yet
+      }
+    }
+    const hash = await wallet.sendTransaction({ to, data: full })
+    const r = await pub.waitForTransactionReceipt({ hash, timeout: 120_000 })
+    if (r.status !== 'success') throw new Error(`Transaction reverted: ${hash}`)
+    if (r.blockNumber > lastTxBlock) lastTxBlock = r.blockNumber
+    return r
+  }
+  const balanceOf = (t: string, blockNumber?: bigint) =>
+    pub.readContract({ address: T[t].address, abi: erc20Abi, functionName: 'balanceOf', args: [account.address], ...(blockNumber ? { blockNumber } : {}) })
+  async function ensureAllowance(t: string, spender: Address, need: bigint) {
+    const have = await pub.readContract({ address: T[t].address, abi: erc20Abi, functionName: 'allowance', args: [account.address, spender] })
+    if (have >= need) return
+    const approve = (amt: bigint) => send(T[t].address, encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [spender, amt] }))
+    if (have > 0n) await approve(0n) // USDT-style tokens refuse a nonzero-to-nonzero change
+    await approve(need * 4n)
+    for (let i = 0; i < 10; i++) {
+      const now = await pub.readContract({ address: T[t].address, abi: erc20Abi, functionName: 'allowance', args: [account.address, spender] }).catch(() => 0n)
+      if (now >= need) return
+      await sleep(1000)
+    }
+  }
+  // What a swap actually delivered, read at its own block (in raw token units).
+  async function received(t: string, before: bigint, block: bigint) {
+    for (let i = 0; ; i++) {
+      try { return (await balanceOf(t, block)) - before } catch (e) { if (i >= 10) throw e; await sleep(1000) }
+    }
+  }
+
+  // ---------- exchanges ----------
+  function venueFor(d: Dex): Venue & { discover(tokens: string[]): Promise<number> } {
+    const pools = new Map<string, number[]>() // "A:B" sorted -> fee tiers with a pool
+    const key = (a: string, b: string) => [a, b].sort().join(':')
+    function paths(tin: string, tout: string): Hex[] {
+      const out: Hex[] = []
+      for (const f of pools.get(key(tin, tout)) ?? []) out.push(encodePacked(['address', 'uint24', 'address'], [T[tin].address, f, T[tout].address]))
+      for (const h of p.hubs) {
+        if (h === tin || h === tout) continue
+        for (const f1 of pools.get(key(tin, h)) ?? []) for (const f2 of pools.get(key(h, tout)) ?? [])
+          out.push(encodePacked(['address', 'uint24', 'address', 'uint24', 'address'], [T[tin].address, f1, T[h].address, f2, T[tout].address]))
+      }
+      return out
+    }
+    async function best(tin: string, tout: string, amt: bigint) {
+      const raw = toRaw(tin, amt)
+      const qs = await Promise.all(paths(tin, tout).map(async (path) => {
+        try {
+          const { result } = await pub.simulateContract({ address: d.quoter, abi: quoterAbi, functionName: 'quoteExactInput', args: [path, raw] })
+          return { path, out: result[0] }
+        } catch { return null }
+      }))
+      let b: { path: Hex; out: bigint } | null = null
+      for (const q of qs) if (q && (!b || q.out > b.out)) b = q
+      return b
+    }
+    const memo = new Map<string, { at: number; p: Promise<bigint | null> }>()
+    return {
+      name: d.name,
+      gas: d.gas,
+      async discover(tokens) {
+        const all = [...new Set(['USDT', ...p.hubs, ...tokens])].filter((t) => T[t])
+        const pairs: [string, string][] = []
+        for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) pairs.push([all[i], all[j]])
+        const res = await pub.multicall({
+          allowFailure: true,
+          contracts: pairs.flatMap(([a, b]) => d.fees.map((fee) => ({ address: d.factory, abi: factoryAbi, functionName: 'getPool', args: [T[a].address, T[b].address, fee] } as const))),
+        })
+        pools.clear()
+        res.forEach((r, i) => {
+          if (r.status !== 'success' || r.result === zeroAddress) return
+          const [a, b] = pairs[Math.floor(i / d.fees.length)]
+          pools.set(key(a, b), [...(pools.get(key(a, b)) ?? []), d.fees[i % d.fees.length]])
+        })
+        return pools.size
+      },
+      quote(tin, tout, amt) {
+        const k = `${tin}>${tout}:${amt}`
+        const hit = memo.get(k)
+        if (hit && Date.now() - hit.at < 4000) return hit.p
+        if (memo.size > 5000) memo.clear()
+        const pr = best(tin, tout, amt).then((b) => (b ? fromRaw(tout, b.out) : null)).catch(() => null)
+        memo.set(k, { at: Date.now(), p: pr })
+        return pr
+      },
+      async swap(tin, tout, amt, minOut) {
+        const raw = toRaw(tin, amt)
+        const b = await best(tin, tout, amt)
+        if (!b) throw new Error(`No ${d.name} route ${tin} -> ${tout}`)
+        await ensureAllowance(tin, d.router, raw)
+        const min = toRaw(tout, minOut)
+        const data = d.routerStyle === '02'
+          ? encodeFunctionData({ abi: router02Abi, functionName: 'exactInput', args: [{ path: b.path, recipient: account.address, amountIn: raw, amountOutMinimum: min }] })
+          : encodeFunctionData({ abi: routerV1Abi, functionName: 'exactInput', args: [{ path: b.path, recipient: account.address, deadline: BigInt(Math.floor(Date.now() / 1000) + 300), amountIn: raw, amountOutMinimum: min }] })
+        return (await send(d.router, data)).transactionHash
+      },
+    }
+  }
+
+  // Drop exchanges whose contracts are not on this chain (wrong address = no code).
+  const venues: ReturnType<typeof venueFor>[] = []
+  try { await pub.getBlockNumber() } catch (e) { say(`cannot reach ${p.key} (${errMsg(e)}); set ${p.key.toUpperCase()}_RPCS in .env`); return }
+  for (const d of p.dexes) {
+    const codes = await Promise.all([d.factory, d.quoter, d.router].map((a) => pub.getCode({ address: a }).catch(() => undefined)))
+    if (codes.every((c) => c && c !== '0x')) venues.push(venueFor(d))
+    else say(`skipping ${d.name}: contracts not found on ${p.key} (check the addresses in src/multi/chains.ts)`)
+  }
+  if (venues.length < 2) { say('needs at least two exchanges; stopping this chain'); return }
+
+  // ---------- discovery, gas ----------
+  let routes: Route[] = [], discoveredAt = 0
+  async function discover() {
+    const counts = await Promise.all(venues.map((v) => v.discover(p.corridors).catch((e) => { say(`${v.name} discovery: ${errMsg(e)}`); return 0 })))
+    const supported = new Map<string, Set<string>>()
+    await Promise.all(venues.map(async (v) => {
+      const set = new Set<string>()
+      await Promise.all(p.corridors.filter((X) => T[X]).map(async (X) => {
+        const got = await v.quote('USDT', X, 5_000_000n)
+        if (got && (await v.quote(X, 'USDT', got))) set.add(X)
+      }))
+      supported.set(v.name, set)
+    }))
+    routes = buildRoutes(supported, venues)
+    discoveredAt = Date.now()
+    say(`discovery: ${venues.map((v, i) => `${v.name} ${counts[i]} pools`).join(', ')}, ${routes.length} routes`)
+    say(`  ${venues.map((v) => `${v.name}: ${[...(supported.get(v.name) ?? [])].join(' ') || '-'}`).join(' | ')}`)
+  }
+  let nativeUsd = 0, nativeAt = 0, gasPrice = 0n, gasAt = 0
+  async function gasUsd(units: number) {
+    if (Date.now() - nativeAt > 10 * 60_000) {
+      const q = await venues[0].quote(p.native, 'USDT', 10n ** BigInt(T[p.native].decimals))
+      if (q) { nativeUsd = usd(q); nativeAt = Date.now() }
+    }
+    if (Date.now() - gasAt > 15_000) { gasPrice = await pub.getGasPrice().catch(() => gasPrice); gasAt = Date.now() }
+    return Number(formatUnits(gasPrice * BigInt(units), 18)) * nativeUsd
+  }
+
+  // ---------- inventory ----------
+  async function bestExit(X: string, amount: bigint) {
+    let b: { venue: Venue; out: bigint } | null = null
+    for (const v of venues) { const out = await v.quote(X, 'USDT', amount); if (out && (!b || out > b.out)) b = { venue: v, out } }
+    return b
+  }
+  let holding = false
+  async function flatten() {
+    holding = false
+    for (const X of p.corridors.filter((t) => T[t] && t !== 'USDT')) {
+      const bal = await balanceOf(X)
+      if (bal === 0n) { pending.clear(X); continue }
+      const exit = await bestExit(X, bal)
+      if (!exit) { say(`  ${formatUnits(bal, T[X].decimals)} ${X} in wallet, no exchange will quote it right now`); continue }
+      if (usd(exit.out) < 1) continue
+      let lot = pending.get(X)
+      if (!lot) { pending.add(X, exit.out); lot = pending.get(X)! }
+      const age = Date.now() - lot.since
+      if (!shouldSell(exit.out, lot.costUsdt, age, MAX_FLATTEN_LOSS_BPS, MAX_HOLD_MS)) {
+        say(`  holding ${X}: exit $${usd(exit.out).toFixed(4)} vs cost $${usd(lot.costUsdt).toFixed(4)}`); holding = true; continue
+      }
+      say(`  flatten: ${X} -> ~$${usd(exit.out).toFixed(4)} via ${exit.venue.name}`)
+      if (!LIVE) continue
+      try {
+        const before = await balanceOf('USDT')
+        const h = await exit.venue.swap(X, 'USDT', bal, (exit.out * (10_000n - SLIPPAGE_BPS)) / 10_000n)
+        const { blockNumber } = await pub.getTransactionReceipt({ hash: h })
+        const out = fromRaw('USDT', await received('USDT', before, blockNumber))
+        log({ event: 'flatten', X, usdtOut: usd(out), costUsdt: usd(lot.costUsdt) })
+        realized += usd(out) - usd(lot.costUsdt)
+        pending.clear(X)
+      } catch (e) { say(`  flatten ${X} failed: ${errMsg(e)}`); holding = true }
+    }
+  }
+
+  // ---------- execution ----------
+  const today = () => new Date().toISOString().slice(0, 10)
+  let realized = 0
+  if (existsSync(`${dir}/trades.jsonl`)) for (const line of readFileSync(`${dir}/trades.jsonl`, 'utf8').split('\n')) {
+    try { const t = JSON.parse(line); if (t.ts?.startsWith(today()) && typeof t.pnl === 'number') realized += t.pnl } catch { /* skip */ }
+  }
+  const cooldown = new Map<string, number>()
+  async function execute(o: Opp) {
+    const { X, buy, sell } = o.route
+    const xBefore = await balanceOf(X)
+    let h1: Hex
+    try { h1 = await buy.swap('USDT', X, o.size, (o.mid * (10_000n - SLIPPAGE_BPS)) / 10_000n) } catch (e) {
+      cooldown.set(routeKey(o.route), Date.now() + COOLDOWN_MS)
+      say(`  leg 1 (${buy.name} buy ${X}) failed: ${errMsg(e)}`); log({ event: 'cycle', route: routeName(o.route), leg1: errMsg(e) }); return null
+    }
+    const r1 = await pub.getTransactionReceipt({ hash: h1 })
+    const got = await received(X, xBefore, r1.blockNumber)
+    pending.add(X, o.size)
+    const uBefore = await balanceOf('USDT')
+    try {
+      const h2 = await sell.swap(X, 'USDT', got, o.size + 1n) // never below what leg 1 cost
+      const r2 = await pub.getTransactionReceipt({ hash: h2 })
+      const out = fromRaw('USDT', await received('USDT', uBefore, r2.blockNumber))
+      pending.clear(X)
+      const pnl = usd(out) - usd(o.size)
+      realized += pnl
+      log({ event: 'cycle', route: routeName(o.route), sizeUsd: usd(o.size), pnl, tx1: h1, tx2: h2 })
+      return pnl
+    } catch (e) {
+      cooldown.set(routeKey(o.route), Date.now() + COOLDOWN_MS)
+      say(`  leg 2 (${sell.name} sell ${X}) failed: ${errMsg(e)}`); log({ event: 'cycle', route: routeName(o.route), tx1: h1, leg2: errMsg(e) })
+      notify(`${p.key}: ${routeName(o.route)} leg 2 failed; holding ${X}, the loss guard will sell it.`)
+      return null
+    }
+  }
+
+  async function cycle() {
+    await flatten()
+    if (holding) { say('  holding leftover inventory; no new trades until it is sold'); return }
+    if (!tradingAllowed(realized, MAX_DAILY_LOSS_USD)) { say(`  paused: today's loss reached $${MAX_DAILY_LOSS_USD}`); return }
+    if (!routes.length || Date.now() - discoveredAt > 6 * 3_600_000) await discover()
+    const live = routes.filter((r) => (cooldown.get(routeKey(r)) ?? 0) < Date.now())
+    const cash = fromRaw('USDT', await balanceOf('USDT'))
+    const cap = parseUnits(String(MAX_TRADE_USD), 6)
+    const maxSize = LIVE ? ((cash * 90n) / 100n < cap ? (cash * 90n) / 100n : cap) : cap
+    const minSize = parseUnits(String(MIN_TRADE_USD), 6)
+    if (maxSize < minSize) { say(`  not enough USDT to trade (have $${usd(cash).toFixed(2)})`); return }
+    const gas = new Map<string, number>()
+    for (const r of live) gas.set(routeKey(r), await gasUsd(r.buy.gas + r.sell.gas))
+    const opps = await scanRoutes(live, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0)
+    for (const o of opps.slice(0, 5)) say(`  ${routeName(o.route).padEnd(24)} $${usd(o.size).toFixed(2).padStart(6)} -> $${usd(o.out).toFixed(4)}  net ${o.net >= 0 ? '+' : ''}${o.net.toFixed(4)}`)
+    const best = opps[0]
+    if (!best || best.net < MIN_EDGE_USD) { say(`  no trade (${live.length} routes)  USDT $${usd(cash).toFixed(2)}  today ${realized >= 0 ? '+' : ''}${realized.toFixed(4)}`); return }
+    say(`  >> ${LIVE ? 'TRADING' : 'would trade'}: ${routeName(best.route)} $${usd(best.size).toFixed(2)}, expected +$${best.net.toFixed(4)}`)
+    if (LIVE) { const pnl = await execute(best); say(`  result: ${pnl === null ? 'incomplete (leftover managed by flatten)' : (pnl >= 0 ? '+' : '') + pnl.toFixed(4)}`) }
+  }
+
+  say(`${LIVE ? 'LIVE' : 'DRY RUN'} | wallet ${account.address} | ${venues.map((v) => v.name).join(' + ')} | max $${MAX_TRADE_USD}`)
+  while (!stopping) {
+    inCycle++
+    try { await cycle() } catch (e) { say(`cycle error: ${errMsg(e)}`) }
+    inCycle--
+    if (!stopping) await sleep(INTERVAL_MS)
+  }
+}
+
+// Ctrl+C: let any chain finish the trade it is in, then exit.
+let stopping = false, inCycle = 0
+process.on('SIGINT', () => {
+  stopping = true
+  console.log('stop requested' + (inCycle ? '; finishing current trades first' : ''))
+  if (!inCycle) process.exit(0)
+  const t = setInterval(() => { if (!inCycle) { clearInterval(t); process.exit(0) } }, 500)
+})
+
+const wanted = process.argv.slice(2).map((s) => s.toLowerCase())
+const chosen = (wanted.length ? wanted : (process.env.MULTI_CHAINS ?? 'bsc').split(',')).map((s) => s.trim())
+const unknown = chosen.filter((c) => !CHAINS[c])
+if (unknown.length) { console.error(`Unknown chain(s): ${unknown.join(', ')}. Available: ${Object.keys(CHAINS).join(', ')}`); process.exit(1) }
+await Promise.all(chosen.map((c) => runChain(CHAINS[c]).catch((e) => console.error(`[${c}] stopped: ${errMsg(e)}`))))
