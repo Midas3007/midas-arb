@@ -8,6 +8,8 @@ import { balanceOf, ensureAllowance } from './swap.js'
 import { MENTO_BROKER, TOKENS, type TokenKey } from './config.js'
 
 const brokerAbi = parseAbi([
+  'function tradingLimitsConfig(bytes32 id) view returns (uint32 timestep0, uint32 timestep1, int48 limit0, int48 limit1, int48 limitGlobal, uint8 flags)',
+  'function tradingLimitsState(bytes32 id) view returns (uint32 lastUpdated0, uint32 lastUpdated1, int48 netflow0, int48 netflow1, int48 netflowGlobal)',
   'function getExchangeProviders() view returns (address[])',
   'function getAmountOut(address exchangeProvider, bytes32 exchangeId, address tokenIn, address tokenOut, uint256 amountIn) view returns (uint256)',
   'function swapIn(address exchangeProvider, bytes32 exchangeId, address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOutMin) returns (uint256)',
@@ -130,6 +132,42 @@ export async function mentoRouteClosed(tin: TokenKey, tout: TokenKey): Promise<s
   return null
 }
 
+// Mento caps how much of a token can flow in or out of each exchange: L0 and L1 per time window, LG overall.
+// Quotes ignore the caps; a swap past one reverts ("L0 Exceeded", "LG Exceeded"). Limits are counted in whole
+// tokens, keyed by exchangeId XOR token address. Read at most every 10s per key.
+const LIMIT_TTL_MS = 10_000
+const limitCache = new Map<string, { at: number; p: Promise<{ cfg: readonly [number, number, number, number, number, number]; st: readonly [number, number, number, number, number] } | null> }>()
+function limitsOf(ex: Exchange, token: TokenKey) {
+  const id = ('0x' + (BigInt(ex.id) ^ BigInt(TOKENS[token].address)).toString(16).padStart(64, '0')) as Hex
+  const hit = limitCache.get(id)
+  if (hit && Date.now() - hit.at < LIMIT_TTL_MS) return hit.p
+  const p = Promise.all([
+    pub.readContract({ address: MENTO_BROKER, abi: brokerAbi, functionName: 'tradingLimitsConfig', args: [id] }),
+    pub.readContract({ address: MENTO_BROKER, abi: brokerAbi, functionName: 'tradingLimitsState', args: [id] }),
+  ]).then(([cfg, st]) => ({ cfg, st })).catch(() => null)
+  limitCache.set(id, { at: Date.now(), p })
+  return p
+}
+const wholeTokens = (amount: bigint, token: TokenKey) => {
+  const n = Number(amount / 10n ** BigInt(TOKENS[token].decimals))
+  return n === 0 && amount > 0n ? 1 : n
+}
+// Why a flow of `delta` whole tokens (+ into Mento, - out of it) would break a limit, or null if it fits.
+async function limitBreach(ex: Exchange, token: TokenKey, delta: number): Promise<string | null> {
+  const l = await limitsOf(ex, token)
+  if (!l) return null // unreadable: let the pre-send simulation be the judge
+  const [timestep0, timestep1, limit0, limit1, limitGlobal, flags] = l.cfg
+  const [lastUpdated0, lastUpdated1, netflow0, netflow1, netflowGlobal] = l.st
+  const now = Math.floor(Date.now() / 1000)
+  if (flags & 1) { const f = (now >= lastUpdated0 + timestep0 ? 0 : netflow0) + delta; if (Math.abs(f) > limit0) return `${token} L0 limit reached` }
+  if (flags & 2) { const f = (now >= lastUpdated1 + timestep1 ? 0 : netflow1) + delta; if (Math.abs(f) > limit1) return `${token} L1 limit reached` }
+  if (flags & 4) { if (Math.abs(netflowGlobal + delta) > limitGlobal) return `${token} global limit reached` }
+  return null
+}
+async function stepBreach(ex: Exchange, tin: TokenKey, tout: TokenKey, amtIn: bigint, amtOut: bigint) {
+  return (await limitBreach(ex, tin, wholeTokens(amtIn, tin))) ?? (await limitBreach(ex, tout, -wholeTokens(amtOut, tout)))
+}
+
 const amountOut = (ex: Exchange, tin: TokenKey, tout: TokenKey, amt: bigint) =>
   pub.readContract({ address: MENTO_BROKER, abi: brokerAbi, functionName: 'getAmountOut', args: [ex.provider, ex.id, TOKENS[tin].address, TOKENS[tout].address, amt] })
 
@@ -140,7 +178,11 @@ export async function mentoQuote(tin: TokenKey, tout: TokenKey, amountIn: bigint
   for (const [, , ex] of r) if (await mentoClosed(ex)) return null
   try {
     let amt = amountIn
-    for (const [a, b, ex] of r) amt = await amountOut(ex, a, b, amt)
+    for (const [a, b, ex] of r) {
+      const out = await amountOut(ex, a, b, amt)
+      if (await stepBreach(ex, a, b, amt, out)) return null
+      amt = out
+    }
     return amt
   } catch { return null }
 }
@@ -166,4 +208,18 @@ export async function mentoSwap(tin: TokenKey, tout: TokenKey, amountIn: bigint,
     }
   }
   return hash
+}
+
+// For npm run mento: why a quote of this size would fail on the trading limits, or null.
+export async function mentoLimitReason(tin: TokenKey, tout: TokenKey, amountIn: bigint): Promise<string | null> {
+  const r = route(tin, tout)
+  if (!r) return 'no route'
+  let amt = amountIn
+  for (const [a, b, ex] of r) {
+    const out = await amountOut(ex, a, b, amt)
+    const why = await stepBreach(ex, a, b, amt, out)
+    if (why) return why
+    amt = out
+  }
+  return null
 }
