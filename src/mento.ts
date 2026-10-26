@@ -1,6 +1,7 @@
 // Mento: Celo's oracle-priced exchange for its local stablecoins (USDm, BRLm, KESm, ...).
 // Exchanges are read from the Broker on-chain, so only the Broker address is hard-coded. Mento pools are mostly
-// against USDm, so a USDT trade usually goes USDT -> USDm -> X (two Broker swaps).
+// against USDm, so a USDT trade usually goes USDT -> USDm -> X; routes take the fewest swaps (at most 3) through
+// whatever exchanges exist.
 import { encodeFunctionData, parseAbi, type Hex } from 'viem'
 import { pub, sendTagged } from './wallet.js'
 import { balanceOf, ensureAllowance } from './swap.js'
@@ -17,14 +18,18 @@ type Exchange = { provider: `0x${string}`; id: Hex }
 const exchanges = new Map<string, Exchange>()
 const pairOf = (a: TokenKey, b: TokenKey) => [a, b].sort().join(':')
 const byAddress = new Map(Object.entries(TOKENS).map(([k, t]) => [t.address.toLowerCase(), k as TokenKey]))
+// Every exchange the Broker lists, including assets the bot does not know (for `npm run mento`).
+export const mentoListing: { provider: string; id: Hex; assets: string[] }[] = []
 
 // Reads every exchange from the Broker. Returns how many involve tokens the bot knows.
 export async function mentoDiscover() {
   exchanges.clear()
+  mentoListing.length = 0
   const providers = await pub.readContract({ address: MENTO_BROKER, abi: brokerAbi, functionName: 'getExchangeProviders' })
   for (const provider of providers) {
     const list = await pub.readContract({ address: provider, abi: providerAbi, functionName: 'getExchanges' }).catch(() => [])
     for (const ex of list) {
+      mentoListing.push({ provider, id: ex.exchangeId, assets: ex.assets.map((a) => byAddress.get(a.toLowerCase()) ?? a) })
       if (ex.assets.length !== 2) continue
       const a = byAddress.get(ex.assets[0].toLowerCase()), b = byAddress.get(ex.assets[1].toLowerCase())
       if (a && b) exchanges.set(pairOf(a, b), { provider, id: ex.exchangeId })
@@ -33,14 +38,31 @@ export async function mentoDiscover() {
   return exchanges.size
 }
 
-// Direct exchange, or two steps through USDm.
-function route(tin: TokenKey, tout: TokenKey): [TokenKey, TokenKey, Exchange][] | null {
-  const direct = exchanges.get(pairOf(tin, tout))
-  if (direct) return [[tin, tout, direct]]
-  if (tin === 'USDm' || tout === 'USDm') return null
-  const a = exchanges.get(pairOf(tin, 'USDm')), b = exchanges.get(pairOf('USDm', tout))
-  return a && b ? [[tin, 'USDm', a], ['USDm', tout, b]] : null
+// Fewest swaps from tin to tout over the known exchanges (breadth-first, at most 3 steps).
+export function mentoRoute(tin: TokenKey, tout: TokenKey): [TokenKey, TokenKey, Exchange][] | null {
+  if (tin === tout) return null
+  const next = new Map<TokenKey, [TokenKey, Exchange][]>()
+  for (const [k, ex] of exchanges) {
+    const [a, b] = k.split(':') as [TokenKey, TokenKey]
+    next.set(a, [...(next.get(a) ?? []), [b, ex]])
+    next.set(b, [...(next.get(b) ?? []), [a, ex]])
+  }
+  let paths: [TokenKey, TokenKey, Exchange][][] = [[]]
+  const seen = new Set<TokenKey>([tin])
+  for (let depth = 0; depth < 3; depth++) {
+    const grown: [TokenKey, TokenKey, Exchange][][] = []
+    for (const p of paths) {
+      const at = p.length ? p[p.length - 1][1] : tin
+      for (const [to, ex] of next.get(at) ?? []) {
+        if (to === tout) return [...p, [at, to, ex]]
+        if (!seen.has(to)) { seen.add(to); grown.push([...p, [at, to, ex]]) }
+      }
+    }
+    paths = grown
+  }
+  return null
 }
+const route = mentoRoute
 
 const amountOut = (ex: Exchange, tin: TokenKey, tout: TokenKey, amt: bigint) =>
   pub.readContract({ address: MENTO_BROKER, abi: brokerAbi, functionName: 'getAmountOut', args: [ex.provider, ex.id, TOKENS[tin].address, TOKENS[tout].address, amt] })

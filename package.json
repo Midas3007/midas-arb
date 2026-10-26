@@ -8,6 +8,7 @@
     "check": "tsx src/check.ts",
     "desk": "tsx src/desk.ts",
     "stats": "tsx src/stats.ts",
+    "mento": "tsx src/mento-check.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
