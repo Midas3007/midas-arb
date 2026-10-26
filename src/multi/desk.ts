@@ -91,14 +91,23 @@ async function runChain(p: ChainProfile) {
   }
 
   // ---------- exchanges ----------
-  function venueFor(d: Dex): Venue & { discover(tokens: string[]): Promise<number> } {
-    const pools = new Map<string, number[]>() // "A:B" sorted -> fee tiers with a pool
-    const key = (a: string, b: string) => [a, b].sort().join(':')
+  // A lane is one way through a single exchange: only its direct pool at one fee tier, or only paths through one
+  // hub token. Pools of the same exchange drift apart (thin local-currency pools most of all), so buying in one
+  // lane and selling in another is a trade even when only one exchange lists the currency.
+  type Lane = { kind: 'all' } | { kind: 'fee'; fee: number } | { kind: 'hub'; hub: string }
+  const pairKey = (a: string, b: string) => [a, b].sort().join(':')
+  type DexVenue = Venue & { pools: Map<string, number[]>; discover(tokens: string[]): Promise<number> }
+  function venueFor(d: Dex, pools = new Map<string, number[]>(), lane: Lane = { kind: 'all' }): DexVenue {
+    // pools: "A:B" sorted -> fee tiers with a pool; shared by an exchange and its lanes
+    const key = pairKey
     function paths(tin: string, tout: string): Hex[] {
       const out: Hex[] = []
-      for (const f of pools.get(key(tin, tout)) ?? []) out.push(encodePacked(['address', 'uint24', 'address'], [T[tin].address, f, T[tout].address]))
-      for (const h of p.hubs) {
-        if (h === tin || h === tout) continue
+      if (lane.kind !== 'hub') for (const f of pools.get(key(tin, tout)) ?? []) {
+        if (lane.kind === 'fee' && f !== lane.fee) continue
+        out.push(encodePacked(['address', 'uint24', 'address'], [T[tin].address, f, T[tout].address]))
+      }
+      if (lane.kind !== 'fee') for (const h of p.hubs) {
+        if (h === tin || h === tout || (lane.kind === 'hub' && h !== lane.hub)) continue
         for (const f1 of pools.get(key(tin, h)) ?? []) for (const f2 of pools.get(key(h, tout)) ?? [])
           out.push(encodePacked(['address', 'uint24', 'address', 'uint24', 'address'], [T[tin].address, f1, T[h].address, f2, T[tout].address]))
       }
@@ -118,8 +127,9 @@ async function runChain(p: ChainProfile) {
     }
     const memo = new Map<string, { at: number; p: Promise<bigint | null> }>()
     return {
-      name: d.name,
-      gas: d.gas,
+      name: lane.kind === 'all' ? d.name : lane.kind === 'fee' ? `${d.name}/${lane.fee / 10_000}%` : `${d.name}/via-${lane.hub}`,
+      gas: lane.kind === 'hub' ? d.gas + 60_000 : d.gas,
+      pools,
       async discover(tokens) {
         const all = [...new Set(['USDT', ...p.hubs, ...tokens])].filter((t) => T[t])
         const pairs: [string, string][] = []
@@ -160,7 +170,8 @@ async function runChain(p: ChainProfile) {
   }
 
   // Drop exchanges whose contracts are not on this chain (wrong address = no code).
-  const venues: ReturnType<typeof venueFor>[] = []
+  const venues: DexVenue[] = []
+  const lanesOf = new Map<DexVenue, { lane: Lane; venue: DexVenue }[]>()
   try { await pub.getBlockNumber() } catch (e) { say(`cannot reach ${p.key} (${errMsg(e)}); set ${p.key.toUpperCase()}_RPCS in .env`); return }
   if (process.env.MULTI_MAJORS === '1') for (const m of p.majors) if (!p.corridors.includes(m)) p.corridors.push(m)
   // Check each gold / local-currency / RWA token: use it only if the address really is that token.
@@ -186,7 +197,12 @@ async function runChain(p: ChainProfile) {
 
   for (const d of p.dexes) {
     const codes = await Promise.all([d.factory, d.quoter, d.router].map((a) => pub.getCode({ address: a }).catch(() => undefined)))
-    if (codes.every((c) => c && c !== '0x')) venues.push(venueFor(d))
+    if (codes.every((c) => c && c !== '0x')) {
+      const v = venueFor(d)
+      venues.push(v)
+      const lanes: Lane[] = [...d.fees.map((fee) => ({ kind: 'fee', fee }) as Lane), ...p.hubs.map((hub) => ({ kind: 'hub', hub }) as Lane)]
+      lanesOf.set(v, lanes.map((lane) => ({ lane, venue: venueFor(d, v.pools, lane) })))
+    }
     else say(`skipping ${d.name}: contracts not found on ${p.key} (check the addresses in src/multi/chains.ts)`)
   }
   if (venues.length < 2) { say('needs at least two exchanges; stopping this chain'); return }
@@ -204,9 +220,26 @@ async function runChain(p: ChainProfile) {
       }))
       supported.set(v.name, set)
     }))
+    // Cross-exchange routes, plus lane-to-lane routes inside each exchange (support read from the pool map).
     routes = buildRoutes(supported, venues)
+    let inside = 0
+    for (const v of venues) {
+      const lanes = lanesOf.get(v) ?? []
+      const laneSupport = new Map<string, Set<string>>()
+      for (const { lane, venue } of lanes) {
+        const set = new Set<string>()
+        for (const X of p.corridors.filter((t) => T[t] && t !== 'USDT')) {
+          if (lane.kind === 'fee' && v.pools.get(pairKey('USDT', X))?.includes(lane.fee)) set.add(X)
+          if (lane.kind === 'hub' && lane.hub !== X && v.pools.get(pairKey('USDT', lane.hub))?.length && v.pools.get(pairKey(lane.hub, X))?.length) set.add(X)
+        }
+        laneSupport.set(venue.name, set)
+      }
+      const r = buildRoutes(laneSupport, lanes.map((l) => l.venue))
+      inside += r.length
+      routes.push(...r)
+    }
     discoveredAt = Date.now()
-    say(`discovery: ${venues.map((v, i) => `${v.name} ${counts[i]} pools`).join(', ')}, ${routes.length} routes`)
+    say(`discovery: ${venues.map((v, i) => `${v.name} ${counts[i]} pools`).join(', ')}, ${routes.length} routes (${inside} pool-to-pool)`)
     say(`  ${venues.map((v) => `${v.name}: ${[...(supported.get(v.name) ?? [])].join(' ') || '-'}`).join(' | ')}`)
   }
   let nativeUsd = 0, nativeAt = 0, gasPrice = 0n, gasAt = 0
