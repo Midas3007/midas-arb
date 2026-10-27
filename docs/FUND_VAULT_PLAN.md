@@ -46,6 +46,12 @@ Tags: 🟢 easy (days) · 🟡 medium (a week or two) · 🔴 hard (weeks, needs
   belongs to the fund, and Midas's whole position becomes Midas's opening shares (today 100% of the fund).
   From then on, personal money must either go in through a deposit (to get shares) or live in another wallet.
   Gas (CELO) is a fund expense.
+- **Midas's personal wallet:** `0xf95E42d5FC3602b05CE9cF8d2E4cFa6b810F3113`. It receives Midas's opening shares
+  and is the wallet Midas uses on the site. The bot wallet never connects to the site.
+- **Site:** reuse the existing https://midas-kiyoshi-fund.vercel.app/ (add wallet connect, deposit, withdraw).
+- **Mobile only:** every step must be doable from the phone. Deploy the contract from Termux with a small
+  script (compiles with solc-js, deploys with the bot wallet key that is already in `.env`, verifies on
+  Celoscan), so no laptop or Remix is needed; Rabby (or MetaMask/Valora) is used on the site.
 
 ## What was asked for
 1. A smart contract for the fund (replaces the Supabase ledger).
