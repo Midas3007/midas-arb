@@ -10,8 +10,9 @@ import { formatUnits, parseUnits } from 'viem'
 import { ATTRIBUTION_TAG, CORRIDORS, CORRIDORS_FIXED, TOKENS, type TokenKey } from './config.js'
 import { account, pub, lastTxBlock } from './wallet.js'
 import { balanceOf } from './swap.js'
-import { uniDiscover, uniQuote } from './uniswap.js'
-import { mentoDiscover } from './mento.js'
+import { uniDiscover, uniPoolAddrs, uniQuote } from './uniswap.js'
+import { mentoDiscover, mentoWatch } from './mento.js'
+import { PoolWatcher } from './watch.js'
 import { ALL_VENUES, received, type Venue } from './venues.js'
 import { buildRoutes, routeKey, routeName, scanRoutes, shouldSell, tradingAllowed, type Opp, type Route } from './engine.js'
 import { PendingStore } from './pending.js'
@@ -95,6 +96,7 @@ function summary() {
 // ---------- discovery ----------
 // A venue "supports" X if a ~$5 round trip USDT -> X -> USDT can be quoted on it.
 let routes: Route[] = []
+const watcher = new PoolWatcher(pub as any)
 let discoveredAt = 0
 async function discover() {
   const tokens = [...new Set<TokenKey>([...CORRIDORS])]
@@ -120,6 +122,8 @@ async function discover() {
     }))
     supported.set(v.name, set)
   }))
+  // Watch Uniswap pools (rescan their tokens) and Mento's Broker and oracles (rescan everything).
+  watcher.set([...[...uniPoolAddrs].map(([a, t]) => [a, t] as [string, string[]]), ...[...mentoWatch].map((a) => [a, ['*']] as [string, string[]])])
   routes = buildRoutes(supported, ALL_VENUES)
   discoveredAt = Date.now()
   status.routes = routes.map(routeName)
@@ -249,7 +253,9 @@ async function execute(o: Opp): Promise<number | null> {
   }
 }
 
-async function cycle() {
+// focus: tokens whose pools just traded (rescan only their routes); null means a full scan.
+async function cycle(focus: Set<string> | null = null) {
+  if (focus && (focus.has('*') || [...focus].some((t) => t === 'USDm' || t === 'USDC' || t === 'CELO'))) focus = null
   await flatten()
   if (holdingInventory) { console.log('  holding leftover inventory; no new trades until it is sold'); return }
 
@@ -258,7 +264,8 @@ async function cycle() {
   if (status.paused) { console.log(`  paused: today's loss $${(-pnlToday).toFixed(2)} reached MAX_DAILY_LOSS_USD`); return }
 
   if (Date.now() - discoveredAt > REDISCOVER_MS || !routes.length) await discover()
-  const live = routes.filter((r) => (cooldown.get(routeKey(r)) ?? 0) < Date.now())
+  const live = routes.filter((r) => (cooldown.get(routeKey(r)) ?? 0) < Date.now() && (!focus || focus.has(r.X)))
+  if (!live.length) return
 
   const cash = await balanceOf(TOKENS.USDT.address)
   const cap = parseUnits(String(MAX_TRADE_USD), 6)
@@ -271,10 +278,11 @@ async function cycle() {
   await Promise.all(live.map(async (r) => gasFor.set(routeKey(r), await gasUsd(r.buy.gas + r.sell.gas))))
   const opps = await scanRoutes(live, minSize, maxSize, (r) => gasFor.get(routeKey(r)) ?? 0)
 
-  for (const o of opps.slice(0, 8)) console.log(`  ${routeName(o.route).padEnd(26)} $${usd(o.size).toFixed(2).padStart(7)} -> $${usd(o.out).toFixed(4)}  net ${o.net >= 0 ? '+' : ''}${o.net.toFixed(4)}`)
+  if (!focus) for (const o of opps.slice(0, 8)) console.log(`  ${routeName(o.route).padEnd(26)} $${usd(o.size).toFixed(2).padStart(7)} -> $${usd(o.out).toFixed(4)}  net ${o.net >= 0 ? '+' : ''}${o.net.toFixed(4)}`)
   status.lastScan = { at: new Date().toISOString(), maxSizeUsd: usd(maxSize), opps: opps.map((o) => ({ route: routeName(o.route), sizeUsd: usd(o.size), outUsd: usd(o.out), edge: o.edge, gasUsd: o.gasUsd, net: o.net })) }
 
   const best = opps[0]
+  if (focus && (!best || best.net < MIN_EDGE_USD)) return // quick rescan after a trade: stay quiet unless it pays
   if (!best || best.net < MIN_EDGE_USD) { console.log(`  no trade: best net below $${MIN_EDGE_USD} (${live.length} routes)`); return }
   console.log(`  >> ${LIVE ? 'TRADING' : 'would trade'}: ${routeName(best.route)} at $${usd(best.size).toFixed(2)}, expected +$${best.net.toFixed(4)} after gas`)
   if (LIVE) {
@@ -338,12 +346,16 @@ if (STARTUP_DELAY_MS > 0) {
 console.log(`Kiyoshi ${LIVE ? 'LIVE' : 'DRY RUN'} | wallet ${account.address} | venues ${status.venues.join(', ')} | max trade $${MAX_TRADE_USD} | min net $${MIN_EDGE_USD} | every ${INTERVAL_MS / 1000}s`)
 if (LIVE) notify(`Kiyoshi started LIVE (max trade $${MAX_TRADE_USD})`)
 let lastError = ''
+// Full scan (with equity and flows) every INTERVAL; in between, rescan as soon as a watched pool trades.
+let focus: Set<string> | null = null, lastFull = 0, quick = 0
 while (true) {
-  console.log(`\n[${new Date().toISOString()}]`)
   if (stopping) break
+  const full = !focus
+  if (full) { console.log(`\n[${new Date().toISOString()}]`); lastFull = Date.now() }
   inCycle = true
   try {
-    await cycle()
+    await cycle(focus)
+    if (!full) { inCycle = false; if (stopping) process.exit(0); focus = await watcher.wait(Math.max(0, lastFull + INTERVAL_MS - Date.now()), () => stopping); if (focus) quick++; continue }
     await updateFlows().catch((e: any) => console.error('  flows:', e.shortMessage ?? e.message))
     const net = netDeposits()
     if (Number.isFinite(net) && net > 0) { state.baselineEquity = net; status.baselineEquity = net }
@@ -365,5 +377,8 @@ while (true) {
   inCycle = false
   if (stopping) { console.log('  stopped cleanly between cycles'); process.exit(0) }
   if (ONCE && !PORT) break
-  await sleep(INTERVAL_MS)
+  console.log(`  watching ${watcher.size} pools and Mento's oracles; ${quick} quick rescans since the last full scan`)
+  quick = 0
+  focus = await watcher.wait(Math.max(0, lastFull + INTERVAL_MS - Date.now()), () => stopping)
+  if (focus) quick++
 }

@@ -68,6 +68,7 @@ const ZERO = '0x0000000000000000000000000000000000000000'
 
 type Hop = { from: TokenKey; to: TokenKey; fee: number }
 const pools = new Map<string, number[]>()
+export const uniPoolAddrs = new Map<string, [TokenKey, TokenKey]>() // pool address -> its tokens (for the watcher)
 const pairOf = (a: TokenKey, b: TokenKey) => [a, b].sort().join(':')
 
 export async function uniDiscover(tokens: TokenKey[]) {
@@ -79,9 +80,11 @@ export async function uniDiscover(tokens: TokenKey[]) {
     contracts: pairs.flatMap(([a, b]) => FEES.map((fee) => ({ address: UNI.FACTORY, abi: factoryAbi, functionName: 'getPool', args: [TOKENS[a].address, TOKENS[b].address, fee] } as const))),
   })
   pools.clear()
+  uniPoolAddrs.clear()
   res.forEach((r, i) => {
     if (r.status !== 'success' || r.result === ZERO) return
     const [a, b] = pairs[Math.floor(i / FEES.length)]
+    uniPoolAddrs.set(String(r.result).toLowerCase(), [a, b])
     const k = pairOf(a, b)
     pools.set(k, [...(pools.get(k) ?? []), FEES[i % FEES.length]])
   })

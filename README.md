@@ -93,6 +93,14 @@ gold; big tokens (BNB, ETH, BTC) are skipped unless `MULTI_MAJORS=1`.
 
 The Celo desk (`npm run desk`) and this one can run at the same time in two Termux sessions.
 
+## Reacting to trades
+
+Both desks watch the pools they trade through (and Mento's Broker and price oracles on Celo). Every
+`WATCH_MS` (default 1500 ms) they check new blocks; when a watched pool trades, the affected currencies are
+rescanned at once instead of waiting for the next `INTERVAL_SEC` scan. Quick rescans stay silent unless they
+find a trade; the full scan line shows how many happened. Textile has no on-chain price feed, so its quotes are
+still checked on the full scan.
+
 ## Settings
 
 All in `.env`; see `.env.example` for the full list with defaults. The ones you are most likely to change:

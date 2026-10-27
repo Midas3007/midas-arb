@@ -14,6 +14,7 @@ import { buildRoutes, routeKey, routeName, scanRoutes, shouldSell, tradingAllowe
 import { PendingStore } from '../pending.js'
 import { notify } from '../notify.js'
 import { CHAINS, envDexes, type ChainProfile, type Dex } from './chains.js'
+import { PoolWatcher } from '../watch.js'
 
 const LIVE = process.env.MULTI_LIVE === '1'
 const MAX_TRADE_USD = Number(process.env.MULTI_MAX_TRADE_USD ?? '20')
@@ -97,7 +98,7 @@ async function runChain(p: ChainProfile) {
   // lane and selling in another is a trade even when only one exchange lists the currency.
   type Lane = { kind: 'all' } | { kind: 'fee'; fee: number } | { kind: 'hub'; hub: string }
   const pairKey = (a: string, b: string) => [a, b].sort().join(':')
-  type DexVenue = Venue & { pools: Map<string, number[]>; discover(tokens: string[]): Promise<number> }
+  type DexVenue = Venue & { pools: Map<string, number[]>; addrs: Map<string, [string, string]>; discover(tokens: string[]): Promise<number> }
   function venueFor(d: Dex, pools = new Map<string, number[]>(), lane: Lane = { kind: 'all' }): DexVenue {
     // pools: "A:B" sorted -> fee tiers with a pool; shared by an exchange and its lanes
     const key = pairKey
@@ -127,10 +128,12 @@ async function runChain(p: ChainProfile) {
       return b
     }
     const memo = new Map<string, { at: number; p: Promise<bigint | null> }>()
+    const addrs = new Map<string, [string, string]>() // pool address -> its two tokens (for the watcher)
     return {
       name: lane.kind === 'all' ? d.name : lane.kind === 'fee' ? `${d.name}/${lane.fee / 10_000}%` : `${d.name}/via-${lane.hub}`,
       gas: lane.kind === 'hub' ? d.gas + 60_000 : d.gas,
       pools,
+      addrs,
       async discover(tokens) {
         const all = [...new Set(['USDT', ...p.hubs, ...tokens])].filter((t) => T[t])
         const pairs: [string, string][] = []
@@ -140,9 +143,11 @@ async function runChain(p: ChainProfile) {
           contracts: pairs.flatMap(([a, b]) => d.fees.map((fee) => ({ address: d.factory, abi: factoryAbi, functionName: 'getPool', args: [T[a].address, T[b].address, fee] } as const))),
         })
         pools.clear()
+        addrs.clear()
         res.forEach((r, i) => {
           if (r.status !== 'success' || r.result === zeroAddress) return
           const [a, b] = pairs[Math.floor(i / d.fees.length)]
+          addrs.set(String(r.result).toLowerCase(), [a, b])
           pools.set(key(a, b), [...(pools.get(key(a, b)) ?? []), d.fees[i % d.fees.length]])
         })
         return pools.size
@@ -222,6 +227,8 @@ async function runChain(p: ChainProfile) {
   }
   if (venues.length < 1) { say(`no exchanges configured${p.dexes.length ? ' or found' : ''}; add ${p.key.toUpperCase()}_DEXES to .env (see .env.example). Stopping this chain`); return }
 
+  const watcher = new PoolWatcher(pub as any)
+
   // ---------- discovery, gas ----------
   let routes: Route[] = [], discoveredAt = 0
   async function discover() {
@@ -236,6 +243,7 @@ async function runChain(p: ChainProfile) {
       supported.set(v.name, set)
     }))
     // Cross-exchange routes, plus lane-to-lane routes inside each exchange (support read from the pool map).
+    watcher.set(venues.flatMap((v) => [...v.addrs]))
     routes = buildRoutes(supported, venues)
     let inside = 0
     for (const v of venues) {
@@ -342,12 +350,15 @@ async function runChain(p: ChainProfile) {
     }
   }
 
-  async function cycle() {
+  // focus: tokens whose pools just traded (rescan only their routes; a hub token or null means everything).
+  async function cycle(focus: Set<string> | null = null) {
+    if (focus && [...focus].some((t) => p.hubs.includes(t))) focus = null
     await flatten()
     if (holding) { say('  holding leftover inventory; no new trades until it is sold'); return }
     if (!tradingAllowed(realized, MAX_DAILY_LOSS_USD)) { say(`  paused: today's loss reached $${MAX_DAILY_LOSS_USD}`); return }
     if (!routes.length || Date.now() - discoveredAt > 6 * 3_600_000) await discover()
-    const live = routes.filter((r) => (cooldown.get(routeKey(r)) ?? 0) < Date.now())
+    const live = routes.filter((r) => (cooldown.get(routeKey(r)) ?? 0) < Date.now() && (!focus || focus.has(r.X)))
+    if (!live.length) return
     const cash = fromRaw('USDT', await balanceOf('USDT'))
     const cap = parseUnits(String(MAX_TRADE_USD), 6)
     const maxSize = LIVE ? ((cash * 90n) / 100n < cap ? (cash * 90n) / 100n : cap) : cap
@@ -356,21 +367,28 @@ async function runChain(p: ChainProfile) {
     const gas = new Map<string, number>()
     for (const r of live) gas.set(routeKey(r), await gasUsd(r.buy.gas + r.sell.gas))
     const opps = await scanRoutes(live, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0)
-    for (const o of opps.slice(0, 5)) say(`  ${routeName(o.route).padEnd(24)} $${usd(o.size).toFixed(2).padStart(6)} -> $${usd(o.out).toFixed(4)}  net ${o.net >= 0 ? '+' : ''}${o.net.toFixed(4)}`)
+    if (!focus) for (const o of opps.slice(0, 5)) say(`  ${routeName(o.route).padEnd(24)} $${usd(o.size).toFixed(2).padStart(6)} -> $${usd(o.out).toFixed(4)}  net ${o.net >= 0 ? '+' : ''}${o.net.toFixed(4)}`)
     const best = opps[0]
     // Every scan's best route is saved (dry run and live) so npm run multi-stats can show how close gaps came.
     if (best) appendFileSync(`${dir}/scans.jsonl`, JSON.stringify({ ts: new Date().toISOString(), route: routeName(best.route), sizeUsd: usd(best.size), net: best.net, would: best.net >= MIN_EDGE_USD, live: LIVE }) + '\n')
+    if (focus && (!best || best.net < MIN_EDGE_USD)) return // a quick rescan after a trade: stay quiet unless it pays
     if (!best || best.net < MIN_EDGE_USD) { say(`  no trade (${live.length} routes)  USDT $${usd(cash).toFixed(2)}  today ${realized >= 0 ? '+' : ''}${realized.toFixed(4)}`); return }
     say(`  >> ${LIVE ? 'TRADING' : 'would trade'}: ${routeName(best.route)} $${usd(best.size).toFixed(2)}, expected +$${best.net.toFixed(4)}`)
     if (LIVE) { const pnl = await execute(best); say(`  result: ${pnl === null ? 'incomplete (leftover managed by flatten)' : (pnl >= 0 ? '+' : '') + pnl.toFixed(4)}`) }
   }
 
   say(`${LIVE ? 'LIVE' : 'DRY RUN'}${['0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', '0xe15fc38f6d8c56af07bbcbe3baf5708a2bf42392'].includes(T.USDT.address.toLowerCase()) ? ' | cash token: USDC (shown as USDT)' : ''} | wallet ${account.address} | ${venues.map((v) => v.name).join(' + ')} | max $${MAX_TRADE_USD}`)
+  // Full scan every INTERVAL; in between, rescan as soon as a watched pool trades.
+  let focus: Set<string> | null = null, lastFull = 0, quick = 0
   while (!stopping) {
+    if (!focus) lastFull = Date.now()
     inCycle++
-    try { await cycle() } catch (e) { say(`cycle error: ${errMsg(e)}`) }
+    try { await cycle(focus) } catch (e) { say(`cycle error: ${errMsg(e)}`) }
     inCycle--
-    if (!stopping) await sleep(INTERVAL_MS)
+    if (stopping) break
+    if (!focus) { say(`  watching ${watcher.size} pools; ${quick} quick rescans since the last full scan`); quick = 0 }
+    focus = await watcher.wait(Math.max(0, lastFull + INTERVAL_MS - Date.now()), () => stopping)
+    if (focus) quick++
   }
 }
 

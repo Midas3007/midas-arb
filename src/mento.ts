@@ -49,12 +49,18 @@ async function learn(address: Address): Promise<TokenKey | undefined> {
 
 // Reads every exchange from the Broker, learning tokens the bot does not know yet.
 // Returns how many exchanges are usable and which tokens were newly added.
+// Addresses whose logs move Mento prices: the Broker (swaps) and SortedOracles (price reports). For the watcher.
+export const mentoWatch = new Set<string>()
 export async function mentoDiscover() {
   exchanges.clear()
   mentoListing.length = 0
   const added: TokenKey[] = []
   const providers = await pub.readContract({ address: MENTO_BROKER, abi: brokerAbi, functionName: 'getExchangeProviders' })
+  mentoWatch.clear()
+  mentoWatch.add(MENTO_BROKER.toLowerCase())
   for (const provider of providers) {
+    const oracles = await pub.readContract({ address: provider, abi: providerAbi, functionName: 'sortedOracles' }).catch(() => null)
+    if (oracles) mentoWatch.add(oracles.toLowerCase())
     const list = await pub.readContract({ address: provider, abi: providerAbi, functionName: 'getExchanges' }).catch(() => [])
     for (const ex of list) for (const a of ex.assets) {
       if (!byAddress.has(a.toLowerCase())) { const k = await learn(a); if (k) added.push(k) }
