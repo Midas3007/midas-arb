@@ -3,7 +3,7 @@
 // Addresses are checked on startup: an exchange whose contracts are missing is dropped with a message.
 // Add tokens without code changes: BSC_TOKENS=SYMBOL:0xaddress:decimals,... (POLYGON_TOKENS for Polygon).
 import type { Address, Chain } from 'viem'
-import { base, bsc, polygon } from 'viem/chains'
+import { base, bsc, polygon, sei } from 'viem/chains'
 
 export type Dex = {
   name: string
@@ -40,6 +40,15 @@ const list = (env: string | undefined, dflt: string[]) => (env ? env.split(',').
 const bscExtra = extraTokens(process.env.BSC_TOKENS)
 const polyExtra = extraTokens(process.env.POLYGON_TOKENS)
 const baseExtra = extraTokens(process.env.BASE_TOKENS)
+const seiExtra = extraTokens(process.env.SEI_TOKENS)
+
+// Extra exchanges from .env, for any chain: SEI_DEXES=name|factory|quoter|router|02  (style 02 or v1), ';' between.
+export const envDexes = (chainKey: string): Dex[] =>
+  (process.env[`${chainKey.toUpperCase()}_DEXES`] ?? '').split(';').map((s) => s.trim()).filter(Boolean).map((s) => {
+    const [name, factory, quoter, router, style] = s.split('|').map((x) => x.trim())
+    return { name, factory: factory as Address, quoter: quoter as Address, router: router as Address,
+      routerStyle: style === 'v1' ? 'v1' : '02', fees: [100, 500, 3000, 10000], gas: 190_000 } as Dex
+  })
 
 export const CHAINS: Record<string, ChainProfile> = {
   bsc: {
@@ -150,5 +159,24 @@ export const CHAINS: Record<string, ChainProfile> = {
       { name: 'sushi', factory: '0xc35DADB65012eC5796536bD9864eD8773aBc74C4', quoter: '0xb1E835Dc2785b52265711e17fCCb0fd018226a6e',
         router: '0xFB7eF66a7e61224DD6FcD0D7d9C3be5C8B049b9f', routerStyle: 'v1', fees: [100, 500, 3000, 10000], gas: 190_000 },
     ],
+  },
+  sei: {
+    // Sei EVM. Cash token is USDC ("USDT" inside the code). Exchange contract addresses are not built in yet:
+    // add them with SEI_DEXES (see .env.example); each is checked on startup.
+    key: 'sei',
+    chain: sei,
+    rpcs: list(process.env.SEI_RPCS, ['https://evm-rpc.sei-apis.com']),
+    native: 'WSEI',
+    hubs: ['WSEI', 'USDT.s'],
+    tokens: {
+      USDT: { address: '0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392', decimals: 6 }, // USDC (cash token on Sei)
+      'USDT.s': { address: '0x9151434b16b9763660705744891fA906F660EcC5', decimals: 6 },
+      WSEI: { address: '0xE30feDd158A2e3b13e9badaeABaFc5516e95e8C7', decimals: 18 },
+      ...seiExtra,
+    },
+    corridors: list(process.env.SEI_CORRIDORS, ['USDT.s', ...Object.keys(seiExtra)]),
+    majors: ['WSEI'],
+    extras: {},
+    dexes: [],
   },
 }

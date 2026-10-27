@@ -13,7 +13,7 @@ import { toDataSuffix } from '@celo/attribution-tags'
 import { buildRoutes, routeKey, routeName, scanRoutes, shouldSell, tradingAllowed, usdOf, type Opp, type Route, type Venue } from '../engine.js'
 import { PendingStore } from '../pending.js'
 import { notify } from '../notify.js'
-import { CHAINS, type ChainProfile, type Dex } from './chains.js'
+import { CHAINS, envDexes, type ChainProfile, type Dex } from './chains.js'
 
 const LIVE = process.env.MULTI_LIVE === '1'
 const MAX_TRADE_USD = Number(process.env.MULTI_MAX_TRADE_USD ?? '20')
@@ -195,7 +195,7 @@ async function runChain(p: ChainProfile) {
   if (added.length) say(`extra tokens: ${added.join(' ')}`)
   if (skipped.length) say(`not found on ${p.key} (skipped): ${skipped.join(' ')}`)
 
-  for (const d of p.dexes) {
+  for (const d of [...p.dexes, ...envDexes(p.key)]) {
     const codes = await Promise.all([d.factory, d.quoter, d.router].map((a) => pub.getCode({ address: a }).catch(() => undefined)))
     if (codes.every((c) => c && c !== '0x')) {
       const v = venueFor(d)
@@ -205,7 +205,7 @@ async function runChain(p: ChainProfile) {
     }
     else say(`skipping ${d.name}: contracts not found on ${p.key} (check the addresses in src/multi/chains.ts)`)
   }
-  if (venues.length < 2) { say('needs at least two exchanges; stopping this chain'); return }
+  if (venues.length < 1) { say(`no exchanges configured${p.dexes.length ? ' or found' : ''}; add ${p.key.toUpperCase()}_DEXES to .env (see .env.example). Stopping this chain`); return }
 
   // ---------- discovery, gas ----------
   let routes: Route[] = [], discoveredAt = 0
@@ -346,7 +346,7 @@ async function runChain(p: ChainProfile) {
     if (LIVE) { const pnl = await execute(best); say(`  result: ${pnl === null ? 'incomplete (leftover managed by flatten)' : (pnl >= 0 ? '+' : '') + pnl.toFixed(4)}`) }
   }
 
-  say(`${LIVE ? 'LIVE' : 'DRY RUN'}${T.USDT.address.toLowerCase() === '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' ? ' | cash token: USDC (shown as USDT)' : ''} | wallet ${account.address} | ${venues.map((v) => v.name).join(' + ')} | max $${MAX_TRADE_USD}`)
+  say(`${LIVE ? 'LIVE' : 'DRY RUN'}${['0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', '0xe15fc38f6d8c56af07bbcbe3baf5708a2bf42392'].includes(T.USDT.address.toLowerCase()) ? ' | cash token: USDC (shown as USDT)' : ''} | wallet ${account.address} | ${venues.map((v) => v.name).join(' + ')} | max $${MAX_TRADE_USD}`)
   while (!stopping) {
     inCycle++
     try { await cycle() } catch (e) { say(`cycle error: ${errMsg(e)}`) }
