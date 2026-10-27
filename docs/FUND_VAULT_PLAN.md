@@ -33,6 +33,17 @@ Tags: 🟢 easy (days) · 🟡 medium (a week or two) · 🔴 hard (weeks, needs
 
 **Before opening to the public (any phase):** legal advice.
 
+## Decisions from Midas (Phase 1)
+- Start: Thursday.
+- **Contract owner:** Midas asked for the bot wallet. Recommended instead: owner = a separate wallet Midas
+  controls (or a 2-of-3 multisig), bot wallet = "operator" (can post value, settle, return funds; cannot change
+  fees, owners or limits). If the bot key on the phone leaks, the attacker then cannot take over the contract.
+  Ownership can be handed over later with one transaction. **Pending Midas's final call.**
+- **Midas's own money in the bot wallet:** at launch, everything in the bot wallet (cash and leftover tokens)
+  belongs to the fund, and Midas's whole position becomes his opening shares (today 100% of the fund).
+  From then on, personal money must either go in through a deposit (to get shares) or live in another wallet.
+  Gas (CELO) is a fund expense.
+
 ## What was asked for
 1. A smart contract for the fund (replaces the Supabase ledger).
 2. A public landing page and dashboard.
