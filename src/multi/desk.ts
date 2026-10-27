@@ -47,10 +47,11 @@ async function runChain(p: ChainProfile) {
   const pending = new PendingStore(`${dir}/pending.json`)
   const log = (o: object) => appendFileSync(`${dir}/trades.jsonl`, JSON.stringify({ ts: new Date().toISOString(), chain: p.key, ...o }) + '\n')
   const T = p.tokens
-  const usdtDec = T.USDT.decimals
-  // The engine counts USDT in 6 decimals ($1 = 1e6). BSC USDT has 18, so USDT amounts are scaled at the edge.
-  const toRaw = (t: string, a: bigint) => (t === 'USDT' ? a * 10n ** BigInt(usdtDec - 6) : a)
-  const fromRaw = (t: string, a: bigint) => (t === 'USDT' ? a / 10n ** BigInt(usdtDec - 6) : a)
+  // The engine counts the cash token ("USDT") in 6 decimals ($1 = 1e6). BSC USDT has 18, so cash amounts are
+  // scaled at the edge. Read at call time: the cash token can be switched on startup (<CHAIN>_CASH).
+  const shift = () => T.USDT.decimals - 6
+  const toRaw = (t: string, a: bigint) => (t !== 'USDT' ? a : shift() >= 0 ? a * 10n ** BigInt(shift()) : a / 10n ** BigInt(-shift()))
+  const fromRaw = (t: string, a: bigint) => (t !== 'USDT' ? a : shift() >= 0 ? a / 10n ** BigInt(shift()) : a * 10n ** BigInt(-shift()))
   const usd = usdOf
 
   // ---------- chain access ----------
@@ -193,6 +194,20 @@ async function runChain(p: ChainProfile) {
     added.push(k)
   })
   if (added.length) say(`extra tokens: ${added.join(' ')}`)
+  // <CHAIN>_CASH=USDC.n trades against another dollar token (the one an exchange's pools actually use).
+  // The previous cash token becomes an ordinary tradable token.
+  const cash = process.env[`${p.key.toUpperCase()}_CASH`]
+  if (cash && cash !== 'USDT') {
+    if (!T[cash]) { say(`${p.key.toUpperCase()}_CASH=${cash} is not a known token here; keeping the default`) } else {
+      const oldKey = T.USDC ? 'CASH0' : 'USDC'
+      T[oldKey] = T.USDT
+      T.USDT = T[cash]
+      delete T[cash]
+      p.corridors = [...p.corridors.filter((k) => k !== cash), oldKey]
+      p.hubs = p.hubs.map((h) => (h === cash ? oldKey : h))
+      say(`cash token switched to ${cash} (shown as USDT); the default cash token is now traded as ${oldKey}`)
+    }
+  }
   if (skipped.length) say(`not found on ${p.key} (skipped): ${skipped.join(' ')}`)
 
   for (const d of [...p.dexes, ...envDexes(p.key)]) {
@@ -241,6 +256,10 @@ async function runChain(p: ChainProfile) {
     discoveredAt = Date.now()
     say(`discovery: ${venues.map((v, i) => `${v.name} ${counts[i]} pools`).join(', ')}, ${routes.length} routes (${inside} pool-to-pool)`)
     say(`  ${venues.map((v) => `${v.name}: ${[...(supported.get(v.name) ?? [])].join(' ') || '-'}`).join(' | ')}`)
+    // An exchange with pools but no routes: show its pairs, so it is clear which token its pools trade against.
+    const sym = new Map(Object.entries(T).map(([k, t]) => [k, k === 'USDT' ? 'cash' : k]))
+    for (const v of venues) if (!supported.get(v.name)?.size && v.pools.size)
+      say(`  ${v.name} has pools but none with the cash token: ${[...v.pools.keys()].map((k) => k.split(':').map((x) => sym.get(x) ?? x).join('/')).join(', ')}`)
   }
   let nativeUsd = 0, nativeAt = 0, gasPrice = 0n, gasAt = 0
   async function gasUsd(units: number) {
