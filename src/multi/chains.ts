@@ -180,6 +180,9 @@ export const CHAINS: Record<string, ChainProfile> = {
       USDY: { address: '0x54cD901491AeF397084453F4372B93c33260e2A6', expect: ['USDY'] },             // Ondo US Treasuries (RWA)
       'USDC.ibc': { address: '0xB75D0B03c06A926e488e2659DF1A861F860bD3d1', expect: ['USDC', 'USDCIBC', 'IBCUSDC', 'USDCE'] },
       'USDC.n': { address: '0x3894085Ef7Ff0f0aeDf52E2A2704928d1Ec074F1', expect: ['USDC', 'USDCN', 'NUSDC', 'NOBLEUSDC'] },
+      // Majors elsewhere, but Sei has far fewer arbitrage bots, so scanned by default here
+      WBTC: { address: '0x0555E30da8f98308EdB960aa94C0Db47230d2B9c', expect: ['WBTC'] },
+      WETH: { address: '0x160345fC359604fC6e70E3c5fAcbdE5F7A9342d8', expect: ['WETH'] },
     },
     dexes: [
       // DragonSwap V2 (from docs.dragonswap.app "Contract Addresses > DEX V2")
