@@ -93,6 +93,12 @@ gold; big tokens (BNB, ETH, BTC) are skipped unless `MULTI_MAJORS=1`.
 
 The Celo desk (`npm run desk`) and this one can run at the same time in two Termux sessions.
 
+**Spreading capital across chains** (`npm run multi-split`): deposit cash plus a little gas on any one chain,
+then `npm run multi-split` shows a plan to split it evenly (and send ~$1 of gas to chains that have none), using
+LI.FI to pick the cheapest bridge. `npm run multi-split -- --go` does it; add `--watch` to keep checking every
+10 minutes so new deposits are spread automatically. Bridges costing more than 2% are skipped
+(`SPLIT_MAX_FEE_PCT`), and imbalances under $5 are left alone (`SPLIT_MIN_MOVE_USD`).
+
 ## Reacting to trades
 
 Both desks watch the pools they trade through (and Mento's Broker and price oracles on Celo). Every
