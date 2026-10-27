@@ -3,6 +3,36 @@
 Notes from the call with Mel (Kiyoshi is about to get a big upgrade). Scope: Midas's own Kiyoshi build, which
 keeps pulling updates from Mel's repo.
 
+## Roadmap: simplest first
+
+Tags: 🟢 easy (days) · 🟡 medium (a week or two) · 🔴 hard (weeks, needs an audit) · ⚪ optional
+
+**Phase 1: basic on-chain fund** (replaces the Supabase ledger)
+- 🟢 Vault contract on Celo: deposit USDT, get shares (ERC-20 token); withdraw shares, get USDT.
+- 🟢 Capital goes to the bot wallet; the fund value is posted by the manager/bot (option B below).
+- 🟢 Deposits and withdrawals settle once a day (scheduled), so nobody times the bot.
+- 🟢 10% performance fee on each person's profit, paid to the manager as shares (as today).
+- 🟢 Approved-wallet list, total deposit cap, 2-of-3 multisig admin, testnet first.
+- 🟢 Opening shares for Midas from the current ledger.
+- 🟢 Dashboard: connect wallet (MetaMask, Valora, WalletConnect), deposit, see shares/value/profit, public fund
+  value and share price chart, risk disclosure.
+
+**Phase 2: more flexibility**
+- 🟡 Instant withdrawals (15% of profit + 0.3% into the fund).
+- 🟡 Transferable shares (15% of the sender's profit at transfer).
+- 🟡 Gas reserve (10% of fees), 48-hour delay on setting changes, emergency pause and member exit.
+- 🟡 MiniPay support, transaction history, tax records.
+
+**Phase 3: trust-minimised**
+- 🔴 Money stays in the vault; the bot trades through it on approved exchanges only (option A below).
+- 🔴 Fund value read on-chain instead of posted; other chains' capital included.
+- 🔴 Independent audit before raising the cap.
+
+**Optional, any time after Phase 1**
+- ⚪ Kiyoshi Pass membership NFT (see the section near the end).
+
+**Before opening to the public (any phase):** legal advice.
+
 ## What was asked for
 1. A smart contract for the fund (replaces the Supabase ledger).
 2. A public landing page and dashboard.
@@ -60,7 +90,7 @@ No profit means no profit fee in every row. 10% of every manager fee still goes 
 public delay (e.g. 48 hours, a "timelock"). Members see the pending change on the dashboard and can withdraw
 first at the old terms.
 
-## Kiyoshi Pass (membership NFT) idea
+## Kiyoshi Pass (membership NFT) ⚪ optional, later
 
 - A limited NFT that acts as the membership card: only wallets holding a Pass can deposit (replaces the
   allow-list). Supply = member slots (e.g. 15), so a seat can be sold or handed on by transferring the Pass.
