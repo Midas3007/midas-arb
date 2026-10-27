@@ -166,16 +166,21 @@ export const CHAINS: Record<string, ChainProfile> = {
     chain: sei,
     rpcs: list(process.env.SEI_RPCS, ['https://evm-rpc.sei-apis.com']),
     native: 'WSEI',
-    hubs: ['WSEI', 'USDT.s'],
+    hubs: ['WSEI', 'USDT0'],
     tokens: {
       USDT: { address: '0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392', decimals: 6 }, // USDC (cash token on Sei)
-      'USDT.s': { address: '0x9151434b16b9763660705744891fA906F660EcC5', decimals: 6 },
+      USDT0: { address: '0x9151434b16b9763660705744891fA906F660EcC5', decimals: 6 },
       WSEI: { address: '0xE30feDd158A2e3b13e9badaeABaFc5516e95e8C7', decimals: 18 },
       ...seiExtra,
     },
-    corridors: list(process.env.SEI_CORRIDORS, ['USDT.s', ...Object.keys(seiExtra)]),
+    corridors: list(process.env.SEI_CORRIDORS, ['USDT0', ...Object.keys(seiExtra)]),
     majors: ['WSEI'],
-    extras: {},
+    extras: {
+      iSEI: { address: '0x5Cf6826140C1C56Ff49C808A1A75407Cd1DF9423', expect: ['ISEI'] },             // liquid-staked SEI
+      USDY: { address: '0x54cD901491AeF397084453F4372B93c33260e2A6', expect: ['USDY'] },             // Ondo US Treasuries (RWA)
+      'USDC.ibc': { address: '0xB75D0B03c06A926e488e2659DF1A861F860bD3d1', expect: ['USDC', 'USDCIBC', 'IBCUSDC', 'USDCE'] },
+      'USDC.n': { address: '0x3894085Ef7Ff0f0aeDf52E2A2704928d1Ec074F1', expect: ['USDC', 'USDCN', 'NUSDC', 'NOBLEUSDC'] },
+    },
     dexes: [
       // DragonSwap V2 (from docs.dragonswap.app "Contract Addresses > DEX V2")
       { name: 'dragon', factory: '0x179d9a5592bc77050796f7be28058c51ca575df4', quoter: '0x38f759cf0af1d0dcaed723a3967a3b658738ede9',
