@@ -35,8 +35,8 @@ keeps pulling updates from Mel's repo.
   taken when that holder withdraws. Works on-chain; a buyer who paid more than the seller's cost will still be
   charged on the seller's gain, so buyers should price that in.
 - *Fund level, high-water mark:* when the share price passes its previous peak, 10% of the new gain is minted
-  as shares to the manager. Simple and identical for everyone, but people who joined late share the fee for
-  gains made before they joined... only until the peak is regained.
+  as shares to the manager. Simple and identical for everyone, but it is not matched to each person's own gain:
+  someone who joins while the fund is below its previous peak pays no fee on the recovery.
 
 **Gas reserve:** 10% of every fee (so 1% of profit) goes to a gas wallet that pays for settlements, value
 updates and bot gas. Show its balance on the dashboard.
