@@ -161,8 +161,7 @@ export const CHAINS: Record<string, ChainProfile> = {
     ],
   },
   sei: {
-    // Sei EVM. Cash token is USDC ("USDT" inside the code). Exchange contract addresses are not built in yet:
-    // add them with SEI_DEXES (see .env.example); each is checked on startup.
+    // Sei EVM. Cash token is USDC ("USDT" inside the code). More exchanges can be added with SEI_DEXES (.env.example).
     key: 'sei',
     chain: sei,
     rpcs: list(process.env.SEI_RPCS, ['https://evm-rpc.sei-apis.com']),
@@ -177,6 +176,10 @@ export const CHAINS: Record<string, ChainProfile> = {
     corridors: list(process.env.SEI_CORRIDORS, ['USDT.s', ...Object.keys(seiExtra)]),
     majors: ['WSEI'],
     extras: {},
-    dexes: [],
+    dexes: [
+      // DragonSwap V2 (from docs.dragonswap.app "Contract Addresses > DEX V2")
+      { name: 'dragon', factory: '0x179d9a5592bc77050796f7be28058c51ca575df4', quoter: '0x38f759cf0af1d0dcaed723a3967a3b658738ede9',
+        router: '0x11da6463d6cb5a03411dbf5ab6f6bc3997ac7428', routerStyle: '02', fees: [100, 500, 2500, 3000, 10000], gas: 190_000 },
+    ],
   },
 }
