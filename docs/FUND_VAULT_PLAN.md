@@ -22,7 +22,7 @@ keeps pulling updates from Mel's repo.
 | 4 | **Which chain the vault lives on** | Celo only (where Kiyoshi trades); one vault per chain; Celo vault with other chains reported | Celo first |
 | 5 | **Fees** | (a) per-person: each holder's cost travels with their shares when they transfer them; (b) fund-level high-water mark | **Midas's call:** 10% performance fee paid as new shares (units) to the manager, as today; 10% of each fee goes to a gas reserve that pays the keeper and bot gas. Per-person (a) is doable on-chain; see "Fees in detail" |
 | 6 | **Lock period / early-exit penalty** | keep the current ones; drop them | note: transferable shares let people exit by selling shares, which skips a lock |
-| 6b | **Transfer fee** | none; 1-2% of the full value of shares moved | **Midas's call:** 1-2% of full value, paid in shares to the manager/treasury. It also discourages using transfers to dodge the lock |
+| 6b | **Instant exits and transfers** | flat 1-2% of full value; 15% of profit | **Proposed:** 15% of profit (vs 10% for scheduled exits), +0.3% into the fund for instant exits; see "Exit and transfer pricing" |
 | 7 | **Who may deposit** | anyone; allow-listed wallets only (members you approve) | allow-list at first (see Legal) |
 | 8 | **Upgradeable or fixed contract** | fixed (simpler, trusted); upgradeable behind a timelock | fixed v1, migrate to v2 if needed |
 | 9 | **Deposit limits** | per-person and total caps | a total cap while it is new, raised over time |
@@ -41,10 +41,20 @@ keeps pulling updates from Mel's repo.
 **Gas reserve:** 10% of every fee (so 1% of profit) goes to a gas wallet that pays for settlements, value
 updates and bot gas. Show its balance on the dashboard.
 
-**Transfer fee:** 1-2% of the full value of the shares moved, taken in shares and sent to the manager/treasury.
-Notes: exempt deposits, withdrawals and moves between a holder's own approved wallets if wanted; tokens with a
-transfer fee do not work well on DEXes or some wallets, so a secondary market would be limited (fine for a
-members' fund).
+**Transfer fee mechanics:** taken in shares at the moment of transfer. Tokens with a transfer fee do not work
+well on DEXes or some wallets, so a secondary market would be limited (fine for a members' fund).
+
+**Exit and transfer pricing (proposed, replaces the flat transfer fee):**
+
+| Action | Fee on profit (to manager, as units) | Extra | Why |
+|---|---|---|---|
+| Scheduled withdrawal (settles at the next window) | 10% | none | the normal, cheapest way out |
+| Instant withdrawal | 15% | 0.3% of the amount, paid **into the fund** (stays with remaining members) | the fund keeps cash idle for instant exits and may have to cut a trade short; the 0.3% stops in-and-out timing even when there is no profit |
+| Transfer to another wallet | 15% of the sender's profit on the shares moved | none | the fee is settled at transfer, so the receiver starts fresh at today's price (no inherited cost) |
+| Transfer between a member's own approved wallets | none | none | not a sale |
+| Any exit or transfer inside the lock period | as above | early-exit penalty, paid into the fund | keeps the lock meaningful |
+
+No profit means no profit fee in every row. 10% of every manager fee still goes to the gas reserve.
 
 **Setting changes:** fee rates, the transfer fee, the bot address and allowed exchanges can only change after a
 public delay (e.g. 48 hours, a "timelock"). Members see the pending change on the dashboard and can withdraw
