@@ -386,7 +386,7 @@ async function runChain(p: ChainProfile) {
     try { await cycle(focus) } catch (e) { say(`cycle error: ${errMsg(e)}`) }
     inCycle--
     if (stopping) break
-    if (!focus) { say(`  watching ${watcher.size} pools; ${quick} quick rescans since the last full scan`); quick = 0 }
+    if (!focus) { say(`  watching ${watcher.size} pools; ${quick} quick rescans since the last full scan${watcher.report()}`); quick = 0 }
     focus = await watcher.wait(Math.max(0, lastFull + INTERVAL_MS - Date.now()), () => stopping)
     if (focus) quick++
   }

@@ -10,6 +10,9 @@ const MAX_RANGE = 200n // never ask for more blocks than this in one call
 export class PoolWatcher {
   private watched = new Map<string, string[]>() // lowercase address -> tokens whose price it moves
   private last = 0n
+  private errors = 0
+  private lastError = ''
+  private chunk = CHUNK
   constructor(private pub: PublicClient, private stepMs = Number(process.env.WATCH_MS ?? '1500')) {}
 
   // Replace the watched set (call after each discovery). tokens: what to rescan when this address changes;
@@ -18,6 +21,14 @@ export class PoolWatcher {
     this.watched = new Map([...entries].map(([a, t]) => [a.toLowerCase(), t]))
   }
   get size() { return this.watched.size }
+
+  // For the scan log: '' when healthy, otherwise how many checks failed since the last report and why.
+  report() {
+    if (!this.errors) return ''
+    const r = ` | WATCHER: ${this.errors} failed checks (${this.lastError}); this RPC may not allow log queries, set a different one`
+    this.errors = 0
+    return r
+  }
 
   // Waits until a watched address emits a log (returns the tokens to rescan) or maxMs passes (returns null).
   async wait(maxMs: number, stop: () => boolean): Promise<Set<string> | null> {
@@ -30,14 +41,19 @@ export class PoolWatcher {
           const from = bn - this.last > MAX_RANGE ? bn - MAX_RANGE + 1n : this.last + 1n
           const addrs = [...this.watched.keys()] as Address[]
           const hit = new Set<string>()
-          for (let i = 0; i < addrs.length; i += CHUNK) {
-            const logs = await this.pub.getLogs({ address: addrs.slice(i, i + CHUNK), fromBlock: from, toBlock: bn })
+          for (let i = 0; i < addrs.length; i += this.chunk) {
+            const logs = await this.pub.getLogs({ address: addrs.slice(i, i + this.chunk), fromBlock: from, toBlock: bn })
             for (const l of logs) for (const t of this.watched.get(l.address.toLowerCase()) ?? []) hit.add(t)
           }
           this.last = bn
           if (hit.size) return hit
         } else if (bn > this.last) this.last = bn
-      } catch { /* RPC hiccup: try again next tick; the timer still forces a full scan */ }
+      } catch (e: any) {
+        // RPC refused or failed: try again next tick (with smaller address batches); the timer still forces a full scan.
+        this.errors++
+        this.lastError = String(e?.shortMessage ?? e?.details ?? e?.message ?? e).split('\n')[0].slice(0, 100)
+        if (this.chunk > 5) this.chunk = Math.max(5, Math.floor(this.chunk / 2))
+      }
       await new Promise((r) => setTimeout(r, Math.min(this.stepMs, Math.max(0, until - Date.now()))))
     }
     return null

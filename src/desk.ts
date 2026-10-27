@@ -358,7 +358,8 @@ while (true) {
     if (!full) { inCycle = false; if (stopping) process.exit(0); focus = await watcher.wait(Math.max(0, lastFull + INTERVAL_MS - Date.now()), () => stopping); if (focus) quick++; continue }
     await updateFlows().catch((e: any) => console.error('  flows:', e.shortMessage ?? e.message))
     const net = netDeposits()
-    if (Number.isFinite(net) && net > 0) { state.baselineEquity = net; status.baselineEquity = net }
+    // P&L = equity - (deposits - withdrawals), so payouts never show as losses (net can be <= 0 once profits are withdrawn).
+    if (Number.isFinite(net)) { state.baselineEquity = net; status.baselineEquity = net }
     status.capital = flowSummary()
     const eq = await equity()
     status.equity = eq
@@ -377,7 +378,7 @@ while (true) {
   inCycle = false
   if (stopping) { console.log('  stopped cleanly between cycles'); process.exit(0) }
   if (ONCE && !PORT) break
-  console.log(`  watching ${watcher.size} pools and Mento's oracles; ${quick} quick rescans since the last full scan`)
+  console.log(`  watching ${watcher.size} pools and Mento's oracles; ${quick} quick rescans since the last full scan${watcher.report()}`)
   quick = 0
   focus = await watcher.wait(Math.max(0, lastFull + INTERVAL_MS - Date.now()), () => stopping)
   if (focus) quick++

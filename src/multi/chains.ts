@@ -54,7 +54,7 @@ export const CHAINS: Record<string, ChainProfile> = {
   bsc: {
     key: 'bsc',
     chain: bsc,
-    rpcs: list(process.env.BSC_RPCS, ['https://bsc-dataseed.binance.org', 'https://bsc-dataseed1.defibit.io', 'https://bsc.publicnode.com']),
+    rpcs: list(process.env.BSC_RPCS, ['https://bsc-rpc.publicnode.com', 'https://bsc-dataseed.binance.org', 'https://bsc-dataseed1.defibit.io']),
     native: 'WBNB',
     hubs: ['WBNB', 'USDC'],
     tokens: {
@@ -88,7 +88,7 @@ export const CHAINS: Record<string, ChainProfile> = {
   polygon: {
     key: 'polygon',
     chain: polygon,
-    rpcs: list(process.env.POLYGON_RPCS, ['https://polygon-rpc.com', 'https://polygon.publicnode.com', 'https://polygon.llamarpc.com']),
+    rpcs: list(process.env.POLYGON_RPCS, ['https://polygon-bor-rpc.publicnode.com', 'https://polygon-rpc.com', 'https://polygon.llamarpc.com']),
     native: 'WPOL',
     hubs: ['WPOL', 'USDC'],
     tokens: {
@@ -128,7 +128,7 @@ export const CHAINS: Record<string, ChainProfile> = {
     // Base trades mostly against USDC, so the desk's cash token ("USDT" inside the code) is USDC here.
     key: 'base',
     chain: base,
-    rpcs: list(process.env.BASE_RPCS, ['https://mainnet.base.org', 'https://base.publicnode.com', 'https://base.llamarpc.com']),
+    rpcs: list(process.env.BASE_RPCS, ['https://base-rpc.publicnode.com', 'https://mainnet.base.org', 'https://base.llamarpc.com']),
     native: 'WETH',
     hubs: ['WETH', 'USDbC'],
     tokens: {
