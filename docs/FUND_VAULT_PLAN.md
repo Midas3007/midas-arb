@@ -60,6 +60,18 @@ No profit means no profit fee in every row. 10% of every manager fee still goes 
 public delay (e.g. 48 hours, a "timelock"). Members see the pending change on the dashboard and can withdraw
 first at the old terms.
 
+## Kiyoshi Pass (membership NFT) idea
+
+- A limited NFT that acts as the membership card: only wallets holding a Pass can deposit (replaces the
+  allow-list). Supply = member slots (e.g. 15), so a seat can be sold or handed on by transferring the Pass.
+- The Pass carries **no share of profits**; shares stay separate. Possible perks: lower exit/transfer fees,
+  earlier settlement, higher deposit cap, a say in settings, holder-only stats.
+- Mint price (and a royalty on resales) is income for the manager, separate from fund performance.
+- If a Pass is sold, the seller's fund shares stay theirs until they withdraw or transfer them.
+- Legal note: a Pass does **not** by itself avoid securities rules. Regulators look at the substance (pooled
+  money, profit from the manager's work), and NFTs sold with an expectation of profit have been treated as
+  securities. It helps by keeping membership invite-based and separate from the investment, but get advice.
+
 ## Things easy to miss
 
 **Contract and security**
