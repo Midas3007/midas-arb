@@ -38,7 +38,10 @@ Tags: 🟢 easy (days) · 🟡 medium (a week or two) · 🔴 hard (weeks, needs
 - **Contract owner:** Midas asked for the bot wallet. Recommended instead: owner = a separate wallet Midas
   controls (or a 2-of-3 multisig), bot wallet = "operator" (can post value, settle, return funds; cannot change
   fees, owners or limits). If the bot key on the phone leaks, the attacker then cannot take over the contract.
-  Ownership can be handed over later with one transaction. **Pending Midas's final call.**
+  Ownership can be handed over later with one transaction.
+  **Decided: the bot wallet is both owner and operator** (Midas will not use it for anything else). Mitigations
+  kept because the key lives on the phone: 48-hour delay on owner/setting changes, daily payout cap, payouts
+  only to members' own wallets, deposit cap, phone lock and backups of the key kept offline.
 - **Midas's own money in the bot wallet:** at launch, everything in the bot wallet (cash and leftover tokens)
   belongs to the fund, and Midas's whole position becomes Midas's opening shares (today 100% of the fund).
   From then on, personal money must either go in through a deposit (to get shares) or live in another wallet.
