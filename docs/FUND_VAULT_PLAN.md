@@ -48,6 +48,9 @@ Tags: 🟢 easy (days) · 🟡 medium (a week or two) · 🔴 hard (weeks, needs
   Gas (CELO) is a fund expense.
 - **Midas's personal wallet:** `0xf95E42d5FC3602b05CE9cF8d2E4cFa6b810F3113`. It receives Midas's opening shares
   and is the wallet Midas uses on the site. The bot wallet never connects to the site.
+- **Share price starts at $1.00** in the new contract: Midas's opening position (about $113 at launch, exact
+  value taken from the wallet that day) becomes that many shares at $1.00. The old ledger is shown on the
+  dashboard as "Season 1 (off-chain)" with its result (+485% at the time of writing) and a link to the old site.
 - **Site:** reuse the existing https://midas-kiyoshi-fund.vercel.app/ (add wallet connect, deposit, withdraw).
 - **Mobile only:** every step must be doable from the phone. Deploy the contract from Termux with a small
   script (compiles with solc-js, deploys with the bot wallet key that is already in `.env`, verifies on
