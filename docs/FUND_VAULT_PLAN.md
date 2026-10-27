@@ -67,7 +67,12 @@ first at the old terms.
 - The Pass carries **no share of profits**; shares stay separate. Possible perks: lower exit/transfer fees,
   earlier settlement, higher deposit cap, a say in settings, holder-only stats.
 - Mint price (and a royalty on resales) is income for the manager, separate from fund performance.
-- If a Pass is sold, the seller's fund shares stay theirs until they withdraw or transfer them.
+- Pass flipping (buy, join, sell, repeat) is welcome: every resale pays a royalty. To keep seats meaningful,
+  fund shares require a Pass: when a Pass is sold, the seller's shares are queued for the next scheduled
+  withdrawal (normal 10% fee) unless they move them to another Pass-holding wallet. Otherwise people could buy
+  a Pass, deposit, sell it, and the fund would end up with more members than seats.
+- Royalties are optional on many marketplaces; enforce them with a royalty-enforcing NFT standard
+  (e.g. ERC-721C) or a built-in resale page, or charge the fee in the Pass contract on every transfer.
 - Legal note: a Pass does **not** by itself avoid securities rules. Regulators look at the substance (pooled
   money, profit from the manager's work), and NFTs sold with an expectation of profit have been treated as
   securities. It helps by keeping membership invite-based and separate from the investment, but get advice.
