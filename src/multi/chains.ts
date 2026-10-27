@@ -180,6 +180,9 @@ export const CHAINS: Record<string, ChainProfile> = {
       // DragonSwap V2 (from docs.dragonswap.app "Contract Addresses > DEX V2")
       { name: 'dragon', factory: '0x179d9a5592bc77050796f7be28058c51ca575df4', quoter: '0x38f759cf0af1d0dcaed723a3967a3b658738ede9',
         router: '0x11da6463d6cb5a03411dbf5ab6f6bc3997ac7428', routerStyle: '02', fees: [100, 500, 2500, 3000, 10000], gas: 190_000 },
+      // Uniswap v3 on Sei, deployed by Oku (from docs.oku.trade)
+      { name: 'uniswap', factory: '0x75fc67473a91335b5b8f8821277262a13b38c9b3', quoter: '0x807f4e281b7a3b324825c64ca53c69f0b418de40',
+        router: '0xdd489c75be1039ec7d843a6ac2fd658350b067cf', routerStyle: '02', fees: [100, 500, 3000, 10000], gas: 180_000 },
     ],
   },
 }
