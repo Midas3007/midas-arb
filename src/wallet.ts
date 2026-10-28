@@ -3,6 +3,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { celo } from 'viem/chains'
 import { toDataSuffix } from '@celo/attribution-tags'
 import { ATTRIBUTION_TAG, RPC_URL } from './config.js'
+import { cheapFees } from './fees.js'
 
 const pk = process.env.AGENT_PRIVATE_KEY as Hex | undefined
 if (!pk) throw new Error('Set AGENT_PRIVATE_KEY in .env (run: npm run new-wallet)')
@@ -31,7 +32,8 @@ export async function sendTaggedReceipt(tx: { to: Address; data?: Hex; value?: b
       await new Promise((r) => setTimeout(r, 1500))
     }
   }
-  const hash = await wallet.sendTransaction({ to: tx.to, data, value: tx.value ?? 0n })
+  const fees = await cheapFees(pub as any, { account: account.address, to: tx.to, data, value: tx.value }).catch(() => ({})) // on a hiccup, viem's defaults
+  const hash = await wallet.sendTransaction({ to: tx.to, data, value: tx.value ?? 0n, ...fees } as any)
   const receipt = await pub.waitForTransactionReceipt({ hash, timeout: 120_000 })
   if (receipt.status !== 'success') throw new Error(`Transaction reverted: ${hash}`)
   if (receipt.blockNumber > lastTxBlock) lastTxBlock = receipt.blockNumber

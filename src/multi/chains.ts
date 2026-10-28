@@ -3,7 +3,7 @@
 // Addresses are checked on startup: an exchange whose contracts are missing is dropped with a message.
 // Add tokens without code changes: BSC_TOKENS=SYMBOL:0xaddress:decimals,... (POLYGON_TOKENS for Polygon).
 import type { Address, Chain } from 'viem'
-import { base, bsc, polygon, sei } from 'viem/chains'
+import { arbitrum, base, bsc, polygon, sei } from 'viem/chains'
 
 export type Dex = {
   name: string
@@ -41,6 +41,7 @@ const bscExtra = extraTokens(process.env.BSC_TOKENS)
 const polyExtra = extraTokens(process.env.POLYGON_TOKENS)
 const baseExtra = extraTokens(process.env.BASE_TOKENS)
 const seiExtra = extraTokens(process.env.SEI_TOKENS)
+const arbExtra = extraTokens(process.env.ARBITRUM_TOKENS)
 
 // Extra exchanges from .env, for any chain: SEI_DEXES=name|factory|quoter|router|02  (style 02 or v1), ';' between.
 export const envDexes = (chainKey: string): Dex[] =>
@@ -191,6 +192,39 @@ export const CHAINS: Record<string, ChainProfile> = {
       // Uniswap v3 on Sei, deployed by Oku (from docs.oku.trade)
       { name: 'uniswap', factory: '0x75fc67473a91335b5b8f8821277262a13b38c9b3', quoter: '0x807f4e281b7a3b324825c64ca53c69f0b418de40',
         router: '0xdd489c75be1039ec7d843a6ac2fd658350b067cf', routerStyle: '02', fees: [100, 500, 3000, 10000], gas: 180_000 },
+    ],
+  },
+  arbitrum: {
+    // Arbitrum One. Robinhood's tokenized stocks also live here: add them with ARBITRUM_TOKENS=SYMBOL:0x..:decimals.
+    key: 'arbitrum',
+    chain: arbitrum,
+    rpcs: list(process.env.ARBITRUM_RPCS, ['https://arbitrum-one-rpc.publicnode.com', 'https://arb1.arbitrum.io/rpc', 'https://arbitrum.llamarpc.com']),
+    native: 'WETH',
+    hubs: ['WETH', 'USDC'],
+    tokens: {
+      USDT: { address: '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9', decimals: 6 },
+      USDC: { address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', decimals: 6 },
+      'USDC.e': { address: '0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8', decimals: 6 },
+      DAI: { address: '0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1', decimals: 18 },
+      WETH: { address: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', decimals: 18 },
+      WBTC: { address: '0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f', decimals: 8 },
+      ARB: { address: '0x912CE59144191C1204E64559FE8253a0e49E6548', decimals: 18 },
+      ...arbExtra,
+    },
+    corridors: list(process.env.ARBITRUM_CORRIDORS, ['USDC', 'USDC.e', 'DAI', ...Object.keys(arbExtra)]),
+    majors: ['WETH', 'WBTC', 'ARB'],
+    extras: {
+      XAUT: { address: '0x40461291347e1eCbb09499F3371D3f17f10d7159', expect: ['XAUT', 'XAUT0'] },   // Tether Gold
+      PAXG: { address: '0xfEb4DfC8C4Cf7Ed305bb08065D08eC6ee6728429', expect: ['PAXG'] },            // Paxos Gold
+      EURe: { address: '0x0c06cCF38114ddfc35e07427B9424adcca9F44F8', expect: ['EURE'] },            // Euro (Monerium)
+    },
+    dexes: [
+      { name: 'uniswap', factory: '0x1F98431c8aD98523631AE4a59f267346ea31F984', quoter: '0x61fFE014bA17989E743c5F6cB21bF9697530B21e',
+        router: '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45', routerStyle: '02', fees: [100, 500, 3000, 10000], gas: 200_000 },
+      { name: 'pancake', factory: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', quoter: '0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997',
+        router: '0x32226588378236Fd0c7c4053999F88aC0e5cAc77', routerStyle: '02', fees: [100, 500, 2500, 10000], gas: 200_000 },
+      { name: 'sushi', factory: '0x1af415a1EbA07a4986a52B6f2e7dE7003D82231e', quoter: '0x0524E833cCD057e4d7A296e3aaAb9f7675964Ce1',
+        router: '0x8A21F6768C1f8075791D08546Dadf6daA0bE820c', routerStyle: 'v1', fees: [100, 500, 3000, 10000], gas: 210_000 },
     ],
   },
 }

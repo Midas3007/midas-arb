@@ -22,12 +22,12 @@ const account = privateKeyToAccount(pk)
 const args = process.argv.slice(2)
 const GO = args.includes('--go'), WATCH = args.includes('--watch')
 const chosen = args.filter((a) => !a.startsWith('--')).map((a) => a.toLowerCase())
-const keys = (chosen.length ? chosen : (process.env.MULTI_CHAINS ?? 'bsc,polygon,base,sei').split(',')).map((s) => s.trim())
+const keys = (chosen.length ? chosen : (process.env.MULTI_CHAINS ?? 'bsc,polygon,base,sei,arbitrum').split(',')).map((s) => s.trim())
 const MIN_MOVE_USD = Number(process.env.SPLIT_MIN_MOVE_USD ?? '5')   // smaller imbalances are left alone
 const MAX_FEE_PCT = Number(process.env.SPLIT_MAX_FEE_PCT ?? '2')     // refuse a bridge that costs more than this
 const GAS_TOPUP_USD = Number(process.env.SPLIT_GAS_TOPUP_USD ?? '1')  // gas sent to a chain that has none
 // Below this much native gas a chain counts as empty (about $0.25-0.7 each).
-const MIN_GAS: Record<string, string> = { bsc: '0.0005', polygon: '0.5', base: '0.0001', sei: '0.5' }
+const MIN_GAS: Record<string, string> = { bsc: '0.0005', polygon: '0.5', base: '0.0001', sei: '0.5', arbitrum: '0.0001' }
 const NATIVE = '0x0000000000000000000000000000000000000000'
 const LIFI = 'https://li.quest/v1'
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))

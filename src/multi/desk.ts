@@ -15,8 +15,11 @@ import { PendingStore } from '../pending.js'
 import { notify } from '../notify.js'
 import { CHAINS, envDexes, type ChainProfile, type Dex } from './chains.js'
 import { PoolWatcher } from '../watch.js'
+import { cheapFees } from '../fees.js'
 
 const LIVE = process.env.MULTI_LIVE === '1'
+// How to look for gaps: --scan / --watch on the command line, or MULTI_MODE=both|scan|watch (default both).
+const MODE = process.argv.includes('--scan') ? 'scan' : process.argv.includes('--watch') ? 'watch' : (process.env.MULTI_MODE ?? 'both')
 const MAX_TRADE_USD = Number(process.env.MULTI_MAX_TRADE_USD ?? '20')
 const MIN_TRADE_USD = Number(process.env.MULTI_MIN_TRADE_USD ?? '2')
 const MIN_EDGE_USD = Number(process.env.MULTI_MIN_EDGE_USD ?? '0.02')
@@ -65,7 +68,8 @@ async function runChain(p: ChainProfile) {
         await sleep(1500) // a load-balanced RPC node may not have seen our previous transaction yet
       }
     }
-    const hash = await wallet.sendTransaction({ to, data: full })
+    const fees = await cheapFees(pub as any, { account: account.address, to, data: full }).catch(() => ({})) // on a hiccup, viem's defaults
+    const hash = await wallet.sendTransaction({ to, data: full, ...fees } as any)
     const r = await pub.waitForTransactionReceipt({ hash, timeout: 120_000 })
     if (r.status !== 'success') throw new Error(`Transaction reverted: ${hash}`)
     if (r.blockNumber > lastTxBlock) lastTxBlock = r.blockNumber
@@ -361,9 +365,10 @@ async function runChain(p: ChainProfile) {
     if (!live.length) return
     const cash = fromRaw('USDT', await balanceOf('USDT'))
     const cap = parseUnits(String(MAX_TRADE_USD), 6)
-    const maxSize = LIVE ? ((cash * 90n) / 100n < cap ? (cash * 90n) / 100n : cap) : cap
+    // Dry runs search up to MULTI_DRY_MAX_USD (default $500) to show what bigger trades would earn.
+    const maxSize = LIVE ? ((cash * 90n) / 100n < cap ? (cash * 90n) / 100n : cap) : parseUnits(process.env.MULTI_DRY_MAX_USD ?? '500', 6)
     const minSize = parseUnits(String(MIN_TRADE_USD), 6)
-    if (maxSize < minSize) { say(`  not enough USDT to trade (have $${usd(cash).toFixed(2)})`); return }
+    if (LIVE && maxSize < minSize) { say(`  not enough USDT to trade (have $${usd(cash).toFixed(2)})`); return }
     const gas = new Map<string, number>()
     for (const r of live) gas.set(routeKey(r), await gasUsd(r.buy.gas + r.sell.gas))
     const opps = await scanRoutes(live, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0)
@@ -378,7 +383,10 @@ async function runChain(p: ChainProfile) {
   }
 
   say(`${LIVE ? 'LIVE' : 'DRY RUN'}${['0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', '0xe15fc38f6d8c56af07bbcbe3baf5708a2bf42392'].includes(T.USDT.address.toLowerCase()) ? ' | cash token: USDC (shown as USDT)' : ''} | wallet ${account.address} | ${venues.map((v) => v.name).join(' + ')} | max $${MAX_TRADE_USD}`)
-  // Full scan every INTERVAL; in between, rescan as soon as a watched pool trades.
+  // MODE both (default): full scan every INTERVAL, and rescan as soon as a watched pool trades.
+  // MODE scan: full scans on the timer only (fewest RPC calls). MODE watch: react to pool trades only, with a
+  // full scan at start and every WATCH_FULL_MIN (default 10) minutes as a safety net.
+  const fullEvery = MODE === 'watch' ? Number(process.env.WATCH_FULL_MIN ?? '10') * 60_000 : INTERVAL_MS
   let focus: Set<string> | null = null, lastFull = 0, quick = 0
   while (!stopping) {
     if (!focus) lastFull = Date.now()
@@ -386,8 +394,10 @@ async function runChain(p: ChainProfile) {
     try { await cycle(focus) } catch (e) { say(`cycle error: ${errMsg(e)}`) }
     inCycle--
     if (stopping) break
-    if (!focus) { say(`  watching ${watcher.size} pools; ${quick} quick rescans since the last full scan${watcher.report()}`); quick = 0 }
-    focus = await watcher.wait(Math.max(0, lastFull + INTERVAL_MS - Date.now()), () => stopping)
+    const left = Math.max(0, lastFull + fullEvery - Date.now())
+    if (MODE === 'scan') { focus = null; await sleep(left); continue }
+    if (!focus) { say(`  ${MODE === 'watch' ? 'watch mode: ' : ''}watching ${watcher.size} pools; ${quick} quick rescans since the last full scan${watcher.report()}`); quick = 0 }
+    focus = await watcher.wait(left, () => stopping)
     if (focus) quick++
   }
 }
@@ -401,7 +411,7 @@ process.on('SIGINT', () => {
   const t = setInterval(() => { if (!inCycle) { clearInterval(t); process.exit(0) } }, 500)
 })
 
-const wanted = process.argv.slice(2).map((s) => s.toLowerCase())
+const wanted = process.argv.slice(2).filter((a) => !a.startsWith('--')).map((s) => s.toLowerCase())
 const chosen = (wanted.length ? wanted : (process.env.MULTI_CHAINS ?? 'bsc').split(',')).map((s) => s.trim())
 const unknown = chosen.filter((c) => !CHAINS[c])
 if (unknown.length) { console.error(`Unknown chain(s): ${unknown.join(', ')}. Available: ${Object.keys(CHAINS).join(', ')}`); process.exit(1) }

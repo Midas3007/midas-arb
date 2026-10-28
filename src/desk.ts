@@ -346,7 +346,11 @@ if (STARTUP_DELAY_MS > 0) {
 console.log(`Kiyoshi ${LIVE ? 'LIVE' : 'DRY RUN'} | wallet ${account.address} | venues ${status.venues.join(', ')} | max trade $${MAX_TRADE_USD} | min net $${MIN_EDGE_USD} | every ${INTERVAL_MS / 1000}s`)
 if (LIVE) notify(`Kiyoshi started LIVE (max trade $${MAX_TRADE_USD})`)
 let lastError = ''
-// Full scan (with equity and flows) every INTERVAL; in between, rescan as soon as a watched pool trades.
+// MODE both (default): full scan (with equity and flows) every INTERVAL, and rescan as soon as a watched pool
+// trades. MODE scan: timer only. MODE watch: react to trades only, full scan every WATCH_FULL_MIN (default 10)
+// minutes. Choose with --scan / --watch or MODE= in .env. Textile quotes are only seen on full scans.
+const MODE = process.argv.includes('--scan') ? 'scan' : process.argv.includes('--watch') ? 'watch' : (process.env.MODE ?? 'both')
+const FULL_EVERY = MODE === 'watch' ? Number(process.env.WATCH_FULL_MIN ?? '10') * 60_000 : INTERVAL_MS
 let focus: Set<string> | null = null, lastFull = 0, quick = 0
 while (true) {
   if (stopping) break
@@ -355,7 +359,7 @@ while (true) {
   inCycle = true
   try {
     await cycle(focus)
-    if (!full) { inCycle = false; if (stopping) process.exit(0); focus = await watcher.wait(Math.max(0, lastFull + INTERVAL_MS - Date.now()), () => stopping); if (focus) quick++; continue }
+    if (!full) { inCycle = false; if (stopping) process.exit(0); focus = await watcher.wait(Math.max(0, lastFull + FULL_EVERY - Date.now()), () => stopping); if (focus) quick++; continue }
     await updateFlows().catch((e: any) => console.error('  flows:', e.shortMessage ?? e.message))
     const net = netDeposits()
     // P&L = equity - (deposits - withdrawals), so payouts never show as losses (net can be <= 0 once profits are withdrawn).
@@ -378,8 +382,9 @@ while (true) {
   inCycle = false
   if (stopping) { console.log('  stopped cleanly between cycles'); process.exit(0) }
   if (ONCE && !PORT) break
-  console.log(`  watching ${watcher.size} pools and Mento's oracles; ${quick} quick rescans since the last full scan${watcher.report()}`)
+  if (MODE === 'scan') { focus = null; await sleep(Math.max(0, lastFull + FULL_EVERY - Date.now())); continue }
+  console.log(`  ${MODE === 'watch' ? 'watch mode: ' : ''}watching ${watcher.size} pools and Mento's oracles; ${quick} quick rescans since the last full scan${watcher.report()}`)
   quick = 0
-  focus = await watcher.wait(Math.max(0, lastFull + INTERVAL_MS - Date.now()), () => stopping)
+  focus = await watcher.wait(Math.max(0, lastFull + FULL_EVERY - Date.now()), () => stopping)
   if (focus) quick++
 }
