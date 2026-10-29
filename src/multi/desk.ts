@@ -5,7 +5,7 @@
 import 'dotenv/config'
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import {
-  concat, createPublicClient, createWalletClient, encodeFunctionData, encodePacked, erc20Abi, fallback, formatUnits,
+  concat, createPublicClient, encodeAbiParameters, createWalletClient, encodeFunctionData, encodePacked, erc20Abi, fallback, formatUnits,
   http, parseAbi, parseUnits, zeroAddress, type Address, type Hex,
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
@@ -179,6 +179,73 @@ async function runChain(p: ChainProfile) {
     }
   }
 
+  // ---------- Uniswap v4 ----------
+  // Direct pools only. Quotes: V4Quoter.quoteExactInputSingle. Swaps: Universal Router command V4_SWAP with
+  // actions SWAP_EXACT_IN_SINGLE, SETTLE_ALL, TAKE_ALL; the router pulls tokens through Permit2. The pre-send
+  // simulation rejects anything malformed before gas is spent.
+  const v4QuoterAbi = parseAbi(['function quoteExactInputSingle(((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 exactAmount,bytes hookData) params) returns (uint256 amountOut,uint256 gasEstimate)'])
+  const permit2Abi = parseAbi(['function allowance(address,address,address) view returns (uint160 amount,uint48 expiration,uint48 nonce)', 'function approve(address token,address spender,uint160 amount,uint48 expiration)'])
+  const urAbi = parseAbi(['function execute(bytes commands,bytes[] inputs,uint256 deadline) payable'])
+  const keyType = { type: 'tuple', components: [{ name: 'currency0', type: 'address' }, { name: 'currency1', type: 'address' }, { name: 'fee', type: 'uint24' }, { name: 'tickSpacing', type: 'int24' }, { name: 'hooks', type: 'address' }] } as const
+  function v4VenueFor(v4: NonNullable<ChainProfile['v4']>, router: Address): DexVenue {
+    const byPair = new Map<string, PoolKey[]>()
+    async function best(tin: string, tout: string, amt: bigint) {
+      const a = T[tin].address.toLowerCase(), raw = toRaw(tin, amt)
+      const qs = await Promise.all((byPair.get(pairKey(tin, tout)) ?? []).map(async (key) => {
+        const zeroForOne = key.currency0.toLowerCase() === a
+        try {
+          const { result } = await pub.simulateContract({ address: v4.quoter, abi: v4QuoterAbi, functionName: 'quoteExactInputSingle', args: [{ poolKey: key, zeroForOne, exactAmount: raw, hookData: '0x' }] })
+          return { key, zeroForOne, out: result[0] }
+        } catch { return null }
+      }))
+      let b: { key: PoolKey; zeroForOne: boolean; out: bigint } | null = null
+      for (const q of qs) if (q && (!b || q.out > b.out)) b = q
+      return b
+    }
+    const memo = new Map<string, { at: number; p: Promise<bigint | null> }>()
+    return {
+      name: 'uniswap-v4', gas: 230_000, pools: new Map(), addrs: new Map(),
+      async discover() {
+        byPair.clear()
+        const keyOf = new Map(Object.entries(T).map(([k, t]) => [t.address.toLowerCase(), k]))
+        for (const pk of v4Raw) {
+          const a = keyOf.get(pk.currency0.toLowerCase()), b = keyOf.get(pk.currency1.toLowerCase())
+          if (a && b) byPair.set(pairKey(a, b), [...(byPair.get(pairKey(a, b)) ?? []), pk])
+        }
+        return [...byPair.values()].reduce((n, l) => n + l.length, 0)
+      },
+      quote(tin, tout, amt) {
+        const k = `${tin}>${tout}:${amt}`, hit = memo.get(k)
+        if (hit && Date.now() - hit.at < 4000) return hit.p
+        if (memo.size > 5000) memo.clear()
+        const pr = best(tin, tout, amt).then((b) => (b ? fromRaw(tout, b.out) : null)).catch(() => null)
+        memo.set(k, { at: Date.now(), p: pr })
+        return pr
+      },
+      async swap(tin, tout, amt, minOut) {
+        const raw = toRaw(tin, amt), min = toRaw(tout, minOut)
+        const b = await best(tin, tout, amt)
+        if (!b) throw new Error(`No uniswap-v4 pool ${tin} -> ${tout}`)
+        // token -> Permit2 allowance, then Permit2 -> router allowance
+        await ensureAllowance(tin, v4.permit2, raw)
+        const [pAmt, pExp] = await pub.readContract({ address: v4.permit2, abi: permit2Abi, functionName: 'allowance', args: [account.address, T[tin].address, router] })
+        if (pAmt < raw || pExp < Math.floor(Date.now() / 1000) + 600) {
+          const amount = raw * 4n > 2n ** 160n - 1n ? 2n ** 160n - 1n : raw * 4n
+          await send(v4.permit2, encodeFunctionData({ abi: permit2Abi, functionName: 'approve', args: [T[tin].address, router, amount, Math.floor(Date.now() / 1000) + 30 * 86400] }))
+        }
+        const params = [
+          encodeAbiParameters([{ type: 'tuple', components: [{ name: 'poolKey', ...keyType }, { name: 'zeroForOne', type: 'bool' }, { name: 'amountIn', type: 'uint128' }, { name: 'amountOutMinimum', type: 'uint128' }, { name: 'hookData', type: 'bytes' }] }],
+            [{ poolKey: b.key, zeroForOne: b.zeroForOne, amountIn: raw, amountOutMinimum: min, hookData: '0x' }]),
+          encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], [T[tin].address, raw]),   // SETTLE_ALL (max to pay)
+          encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], [T[tout].address, min]),  // TAKE_ALL (min to receive)
+        ]
+        const input = encodeAbiParameters([{ type: 'bytes' }, { type: 'bytes[]' }], [encodePacked(['uint8', 'uint8', 'uint8'], [0x06, 0x0c, 0x0f]), params])
+        const data = encodeFunctionData({ abi: urAbi, functionName: 'execute', args: ['0x10', [input], BigInt(Math.floor(Date.now() / 1000) + 300)] })
+        return (await send(router, data)).transactionHash
+      },
+    }
+  }
+
   // Drop exchanges whose contracts are not on this chain (wrong address = no code).
   const venues: DexVenue[] = []
   const lanesOf = new Map<DexVenue, { lane: Lane; venue: DexVenue }[]>()
@@ -186,16 +253,35 @@ async function runChain(p: ChainProfile) {
   if (process.env.MULTI_MAJORS === '1') for (const m of p.majors) if (!p.corridors.includes(m)) p.corridors.push(m)
   // Chains with `auto`: build the token list from the exchange's own pools (PoolCreated logs, read from the
   // chain's Blockscout explorer), then trade the most connected tokens against the cash token.
+  type PoolKey = { currency0: Address; currency1: Address; fee: number; tickSpacing: number; hooks: Address }
+  const v4Raw: PoolKey[] = []
   const allow = new Set((process.env[`${p.key.toUpperCase()}_ALLOW`] ?? '').split(',').map((a) => a.trim().toLowerCase()).filter(Boolean))
   if (p.auto) {
-    const topic0 = '0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118' // PoolCreated(address,address,uint24,int24,address)
+    const logsOf = async (address: string, topic0: string) => {
+      const out: any[] = []
+      for (let page = 1; page <= 20; page++) {
+        const url = `${p.auto!.blockscout}/api?module=logs&action=getLogs&address=${address}&topic0=${topic0}&fromBlock=0&toBlock=latest&page=${page}&offset=1000`
+        const j: any = await fetch(url, { signal: AbortSignal.timeout(30_000) }).then((r) => r.json()).catch((e) => { say(`token discovery: ${errMsg(e)}`); return null })
+        const rows = Array.isArray(j?.result) ? j.result : []
+        out.push(...rows)
+        if (rows.length < 1000) break
+      }
+      return out
+    }
+    const addr = (topic: string) => ('0x' + topic.slice(26)).toLowerCase()
     const pairs: [string, string][] = []
-    for (let page = 1; page <= 20; page++) {
-      const url = `${p.auto.blockscout}/api?module=logs&action=getLogs&address=${p.auto.factory}&topic0=${topic0}&fromBlock=0&toBlock=latest&page=${page}&offset=1000`
-      const j: any = await fetch(url, { signal: AbortSignal.timeout(30_000) }).then((r) => r.json()).catch((e) => { say(`token discovery: ${errMsg(e)}`); return null })
-      const rows = Array.isArray(j?.result) ? j.result : []
-      for (const l of rows) if (l.topics?.length >= 3) pairs.push([('0x' + l.topics[1].slice(26)).toLowerCase(), ('0x' + l.topics[2].slice(26)).toLowerCase()])
-      if (rows.length < 1000) break
+    // v3: PoolCreated(address,address,uint24,int24,address)
+    for (const l of await logsOf(p.auto.factory, '0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118'))
+      if (l.topics?.length >= 3) pairs.push([addr(l.topics[1]), addr(l.topics[2])])
+    // v4: Initialize(bytes32 id, address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks, ...)
+    if (p.v4) for (const l of await logsOf(p.v4.poolManager, '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438')) {
+      if (!(l.topics?.length >= 4) || !l.data) continue
+      const c0 = addr(l.topics[2]), c1 = addr(l.topics[3]), d = l.data.slice(2)
+      if (c0 === zeroAddress || c1 === zeroAddress) continue // native-ETH pools are not supported (the desk trades WETH)
+      const fee = Number(BigInt('0x' + d.slice(0, 64))), tsw = BigInt('0x' + d.slice(64, 128))
+      const tickSpacing = Number(tsw >= 2n ** 255n ? tsw - 2n ** 256n : tsw), hooks = ('0x' + d.slice(128 + 24, 192)) as Address
+      v4Raw.push({ currency0: c0 as Address, currency1: c1 as Address, fee, tickSpacing, hooks })
+      pairs.push([c0, c1])
     }
     const count = new Map<string, number>()
     for (const [a, b] of pairs) { count.set(a, (count.get(a) ?? 0) + 1); count.set(b, (count.get(b) ?? 0) + 1) }
@@ -270,6 +356,14 @@ async function runChain(p: ChainProfile) {
       lanesOf.set(v, lanes.map((lane) => ({ lane, venue: venueFor(d, v.pools, lane) })))
     }
     else say(`skipping ${d.name}: contracts not found on ${p.key} (check the addresses in src/multi/chains.ts)`)
+  }
+  if (p.v4) {
+    const v4 = p.v4
+    const codes = await Promise.all([v4.poolManager, v4.quoter, v4.permit2, ...v4.routers].map((a) => pub.getCode({ address: a }).catch(() => undefined)))
+    const has = (i: number) => !!codes[i] && codes[i] !== '0x'
+    const router = v4.routers.find((_, i) => has(3 + i))
+    if (has(0) && has(1) && has(2) && router) venues.push(v4VenueFor(v4, router))
+    else say('skipping uniswap-v4: contracts not found (check src/multi/chains.ts)')
   }
   if (venues.length < 1) { say(`no exchanges configured${p.dexes.length ? ' or found' : ''}; add ${p.key.toUpperCase()}_DEXES to .env (see .env.example). Stopping this chain`); return }
 

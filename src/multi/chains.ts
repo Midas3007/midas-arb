@@ -31,6 +31,9 @@ export type ChainProfile = {
   // Find tokens from the exchange's own pool list (PoolCreated logs) instead of a fixed list. cash: symbol of
   // the dollar token to trade against. Tokens whose address is not in <CHAIN>_ALLOW can only be dry-run.
   auto?: { factory: Address; blockscout: string; cash: string; maxTokens: number }
+  // Uniswap v4 (one PoolManager for all pools; quotes from V4Quoter, swaps through the Universal Router with
+  // Permit2). routers: candidates, the first one with code on the chain is used.
+  v4?: { poolManager: Address; quoter: Address; routers: Address[]; permit2: Address }
   dexes: Dex[]
 }
 
@@ -251,6 +254,11 @@ export const CHAINS: Record<string, ChainProfile> = {
     majors: [],
     extras: {},
     auto: { factory: '0x1f7d7550b1b028f7571e69a784071f0205fd2efa', blockscout: 'https://robinhoodchain.blockscout.com', cash: process.env.ROBINHOOD_CASH ?? 'USDG', maxTokens: Number(process.env.ROBINHOOD_MAX_TOKENS ?? '40') },
+    v4: { // developers.uniswap.org v4 deployments; the Universal Router was redeployed on 2026-07-06 (Uniswap/docs#1161)
+      poolManager: '0x8366a39cc670b4001a1121b8f6a443a643e40951', quoter: '0x8dc178efb8111bb0973dd9d722ebeff267c98f94',
+      routers: ['0x06afBA43fd06227fA663b0dAeCF536F6eaA6BF99', '0x8876789976decbfcbbbe364623c63652db8c0904'],
+      permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+    },
     dexes: [
       // Uniswap v3 on Robinhood Chain (developers.uniswap.org, v3 deployments)
       { name: 'uniswap', factory: '0x1f7d7550b1b028f7571e69a784071f0205fd2efa', quoter: '0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7',

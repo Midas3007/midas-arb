@@ -93,7 +93,8 @@ gold; big tokens (BNB, ETH, BTC) are skipped unless `MULTI_MAJORS=1`.
 
 The Celo desk (`npm run desk`) and this one can run at the same time in two Termux sessions.
 
-**Robinhood Chain** (`npm run multi -- robinhood`): Uniswap v3 on Robinhood's L2. At startup the bot reads
+**Robinhood Chain** (`npm run multi -- robinhood`): Uniswap v3 and Uniswap v4 on Robinhood's L2 (v4 holds most of
+the stock-token liquidity; v4 pools paired with native ETH are skipped). At startup the bot reads
 Uniswap's pool list from the chain's explorer and picks up every token pooled against USDG or WETH, including
 Robinhood's tokenized stocks. Copycat tokens with the same ticker exist, so only addresses you list in
 `ROBINHOOD_ALLOW` (from Robinhood's official Stock Token registry) can trade live; the rest are dry-run only.
