@@ -33,6 +33,7 @@ const LIFI = 'https://li.quest/v1'
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const errMsg = (e: any) => String(e?.shortMessage ?? e?.message ?? e).split('\n')[0]
 
+for (const k of keys) if (CHAINS[k]?.auto) { console.error(`${k} finds its tokens at startup, so multi-split cannot use it yet; leave it out`); process.exit(1) }
 for (const k of keys) if (!CHAINS[k]) { console.error(`Unknown chain ${k}. Available: ${Object.keys(CHAINS).join(', ')}`); process.exit(1) }
 
 type Side = { key: string; p: ChainProfile; cash: { address: Address; decimals: number }; pub: any; wallet: any }

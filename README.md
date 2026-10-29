@@ -93,6 +93,12 @@ gold; big tokens (BNB, ETH, BTC) are skipped unless `MULTI_MAJORS=1`.
 
 The Celo desk (`npm run desk`) and this one can run at the same time in two Termux sessions.
 
+**Robinhood Chain** (`npm run multi -- robinhood`): Uniswap v3 on Robinhood's L2. At startup the bot reads
+Uniswap's pool list from the chain's explorer and picks up every token pooled against USDG or WETH, including
+Robinhood's tokenized stocks. Copycat tokens with the same ticker exist, so only addresses you list in
+`ROBINHOOD_ALLOW` (from Robinhood's official Stock Token registry) can trade live; the rest are dry-run only.
+Gas is ETH on Robinhood Chain; cash is USDG.
+
 **Spreading capital across chains** (`npm run multi-split`): deposit cash plus a little gas on any one chain,
 then `npm run multi-split` shows a plan to split it evenly (and send ~$1 of gas to chains that have none), using
 LI.FI to pick the cheapest bridge. `npm run multi-split -- --go` does it; add `--watch` to keep checking every

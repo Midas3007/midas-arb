@@ -184,6 +184,48 @@ async function runChain(p: ChainProfile) {
   const lanesOf = new Map<DexVenue, { lane: Lane; venue: DexVenue }[]>()
   try { await pub.getBlockNumber() } catch (e) { say(`cannot reach ${p.key} (${errMsg(e)}); set ${p.key.toUpperCase()}_RPCS in .env`); return }
   if (process.env.MULTI_MAJORS === '1') for (const m of p.majors) if (!p.corridors.includes(m)) p.corridors.push(m)
+  // Chains with `auto`: build the token list from the exchange's own pools (PoolCreated logs, read from the
+  // chain's Blockscout explorer), then trade the most connected tokens against the cash token.
+  const allow = new Set((process.env[`${p.key.toUpperCase()}_ALLOW`] ?? '').split(',').map((a) => a.trim().toLowerCase()).filter(Boolean))
+  if (p.auto) {
+    const topic0 = '0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118' // PoolCreated(address,address,uint24,int24,address)
+    const pairs: [string, string][] = []
+    for (let page = 1; page <= 20; page++) {
+      const url = `${p.auto.blockscout}/api?module=logs&action=getLogs&address=${p.auto.factory}&topic0=${topic0}&fromBlock=0&toBlock=latest&page=${page}&offset=1000`
+      const j: any = await fetch(url, { signal: AbortSignal.timeout(30_000) }).then((r) => r.json()).catch((e) => { say(`token discovery: ${errMsg(e)}`); return null })
+      const rows = Array.isArray(j?.result) ? j.result : []
+      for (const l of rows) if (l.topics?.length >= 3) pairs.push([('0x' + l.topics[1].slice(26)).toLowerCase(), ('0x' + l.topics[2].slice(26)).toLowerCase()])
+      if (rows.length < 1000) break
+    }
+    const count = new Map<string, number>()
+    for (const [a, b] of pairs) { count.set(a, (count.get(a) ?? 0) + 1); count.set(b, (count.get(b) ?? 0) + 1) }
+    const addrs = [...count.keys()].sort((a, b) => count.get(b)! - count.get(a)!).slice(0, 300)
+    const meta = await pub.multicall({ allowFailure: true, contracts: addrs.flatMap((a) => [
+      { address: a as Address, abi: erc20Abi, functionName: 'symbol' } as const, { address: a as Address, abi: erc20Abi, functionName: 'decimals' } as const]) }).catch(() => [])
+    const info = new Map<string, { sym: string; dec: number }>()
+    addrs.forEach((a, i) => { const sy = meta[2 * i], de = meta[2 * i + 1]; if (sy?.status === 'success' && de?.status === 'success') info.set(a, { sym: String(sy.result).replace(/[^A-Za-z0-9.]/g, '').slice(0, 12), dec: Number(de.result) }) })
+    const norm = (x: string) => x.toUpperCase().replace(/[^A-Z0-9]/g, '')
+    const bySym = (sym: string) => addrs.find((a) => info.get(a) && norm(info.get(a)!.sym) === norm(sym)) // most pooled first
+    const cashA = bySym(p.auto.cash), wethA = bySym('WETH')
+    if (!cashA) { say(`token discovery found ${pairs.length} pools but no ${p.auto.cash}; set ${p.key.toUpperCase()}_CASH or check ${p.auto.blockscout}`); return }
+    T.USDT = { address: cashA as Address, decimals: info.get(cashA)!.dec }
+    if (wethA) { T.WETH = { address: wethA as Address, decimals: info.get(wethA)!.dec } } else { p.hubs = []; p.native = 'USDT' }
+    const linked = new Set<string>()
+    for (const [a, b] of pairs) { if (a === cashA || a === wethA) linked.add(b); if (b === cashA || b === wethA) linked.add(a) }
+    const seen = new Map<string, number>()
+    for (const a of addrs) {
+      if (p.corridors.length >= p.auto.maxTokens) break
+      if (a === cashA || a === wethA || !linked.has(a) || !info.get(a)) continue
+      const base = info.get(a)!.sym || 'TKN', n = seen.get(base) ?? 0; seen.set(base, n + 1)
+      const key = n ? `${base}.${a.slice(2, 6)}` : base // copycat tickers get an address suffix
+      T[key] = { address: a as Address, decimals: info.get(a)!.dec }; p.corridors.push(key)
+    }
+    const live = p.corridors.filter((k) => allow.has(T[k].address.toLowerCase()))
+    say(`token discovery: ${pairs.length} pools, cash ${p.auto.cash} ${cashA.slice(0, 8)}…, ${p.corridors.length} tokens: ${p.corridors.slice(0, 25).join(' ')}${p.corridors.length > 25 ? ' …' : ''}`)
+    say(`  allowed to trade live (${p.key.toUpperCase()}_ALLOW): ${live.length ? live.join(' ') : 'none yet, so this chain is dry-run only'}`)
+  }
+  const liveAllowed = (X: string) => !p.auto || allow.has(T[X]?.address.toLowerCase() ?? '')
+
   // Check each gold / local-currency / RWA token: use it only if the address really is that token.
   const extraNames = Object.keys(p.extras).filter((k) => !T[k])
   const meta = await pub.multicall({
@@ -379,10 +421,11 @@ async function runChain(p: ChainProfile) {
     if (focus && (!best || best.net < MIN_EDGE_USD)) return // a quick rescan after a trade: stay quiet unless it pays
     if (!best || best.net < MIN_EDGE_USD) { say(`  no trade (${live.length} routes)  USDT $${usd(cash).toFixed(2)}  today ${realized >= 0 ? '+' : ''}${realized.toFixed(4)}`); return }
     say(`  >> ${LIVE ? 'TRADING' : 'would trade'}: ${routeName(best.route)} $${usd(best.size).toFixed(2)}, expected +$${best.net.toFixed(4)}`)
+    if (LIVE && !liveAllowed(best.route.X)) { say(`  ${best.route.X} is not in ${p.key.toUpperCase()}_ALLOW; not trading it (add its official address to trade it)`); return }
     if (LIVE) { const pnl = await execute(best); say(`  result: ${pnl === null ? 'incomplete (leftover managed by flatten)' : (pnl >= 0 ? '+' : '') + pnl.toFixed(4)}`) }
   }
 
-  say(`${LIVE ? 'LIVE' : 'DRY RUN'}${['0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', '0xe15fc38f6d8c56af07bbcbe3baf5708a2bf42392'].includes(T.USDT.address.toLowerCase()) ? ' | cash token: USDC (shown as USDT)' : ''} | wallet ${account.address} | ${venues.map((v) => v.name).join(' + ')} | max $${MAX_TRADE_USD}`)
+  say(`${LIVE ? 'LIVE' : 'DRY RUN'}${p.auto ? ` | cash token: ${p.auto.cash} (shown as USDT)` : ['0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', '0xe15fc38f6d8c56af07bbcbe3baf5708a2bf42392'].includes(T.USDT.address.toLowerCase()) ? ' | cash token: USDC (shown as USDT)' : ''} | wallet ${account.address} | ${venues.map((v) => v.name).join(' + ')} | max $${MAX_TRADE_USD}`)
   // MODE both (default): full scan every INTERVAL, and rescan as soon as a watched pool trades.
   // MODE scan: full scans on the timer only (fewest RPC calls). MODE watch: react to pool trades only, with a
   // full scan at start and every WATCH_FULL_MIN (default 10) minutes as a safety net.

@@ -3,6 +3,7 @@
 // Addresses are checked on startup: an exchange whose contracts are missing is dropped with a message.
 // Add tokens without code changes: BSC_TOKENS=SYMBOL:0xaddress:decimals,... (POLYGON_TOKENS for Polygon).
 import type { Address, Chain } from 'viem'
+import { defineChain } from 'viem'
 import { arbitrum, base, bsc, polygon, sei } from 'viem/chains'
 
 export type Dex = {
@@ -27,6 +28,9 @@ export type ChainProfile = {
   // Gold, local-currency and other real-world-asset tokens. Addresses are checked on startup: a token is used
   // only if its on-chain symbol matches one of `expect` (decimals are read on-chain), otherwise it is skipped.
   extras: Record<string, { address: Address; expect: string[] }>
+  // Find tokens from the exchange's own pool list (PoolCreated logs) instead of a fixed list. cash: symbol of
+  // the dollar token to trade against. Tokens whose address is not in <CHAIN>_ALLOW can only be dry-run.
+  auto?: { factory: Address; blockscout: string; cash: string; maxTokens: number }
   dexes: Dex[]
 }
 
@@ -42,6 +46,12 @@ const polyExtra = extraTokens(process.env.POLYGON_TOKENS)
 const baseExtra = extraTokens(process.env.BASE_TOKENS)
 const seiExtra = extraTokens(process.env.SEI_TOKENS)
 const arbExtra = extraTokens(process.env.ARBITRUM_TOKENS)
+
+const robinhoodChain = defineChain({
+  id: 4663, name: 'Robinhood Chain', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  rpcUrls: { default: { http: ['https://rpc.mainnet.chain.robinhood.com'] } },
+  contracts: { multicall3: { address: '0xcA11bde05977b3631167028862bE2a173976CA11' } },
+})
 
 // Extra exchanges from .env, for any chain: SEI_DEXES=name|factory|quoter|router|02  (style 02 or v1), ';' between.
 export const envDexes = (chainKey: string): Dex[] =>
@@ -225,6 +235,26 @@ export const CHAINS: Record<string, ChainProfile> = {
         router: '0x32226588378236Fd0c7c4053999F88aC0e5cAc77', routerStyle: '02', fees: [100, 500, 2500, 10000], gas: 200_000 },
       { name: 'sushi', factory: '0x1af415a1EbA07a4986a52B6f2e7dE7003D82231e', quoter: '0x0524E833cCD057e4d7A296e3aaAb9f7675964Ce1',
         router: '0x8A21F6768C1f8075791D08546Dadf6daA0bE820c', routerStyle: 'v1', fees: [100, 500, 3000, 10000], gas: 210_000 },
+    ],
+  },
+  robinhood: {
+    // Robinhood Chain (Arbitrum Orbit L2, chain 4663). Tokens, including Robinhood's tokenized stocks, are found
+    // from Uniswap v3's pool list at startup. Copycat tokens with the same ticker exist: only addresses listed in
+    // ROBINHOOD_ALLOW (comma separated, from Robinhood's official Stock Token registry) can trade live.
+    key: 'robinhood',
+    chain: robinhoodChain,
+    rpcs: list(process.env.ROBINHOOD_RPCS, ['https://rpc.mainnet.chain.robinhood.com']),
+    native: 'WETH',
+    hubs: ['WETH'],
+    tokens: {},
+    corridors: [],
+    majors: [],
+    extras: {},
+    auto: { factory: '0x1f7d7550b1b028f7571e69a784071f0205fd2efa', blockscout: 'https://robinhoodchain.blockscout.com', cash: process.env.ROBINHOOD_CASH ?? 'USDG', maxTokens: Number(process.env.ROBINHOOD_MAX_TOKENS ?? '40') },
+    dexes: [
+      // Uniswap v3 on Robinhood Chain (developers.uniswap.org, v3 deployments)
+      { name: 'uniswap', factory: '0x1f7d7550b1b028f7571e69a784071f0205fd2efa', quoter: '0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7',
+        router: '0xcaf681a66d020601342297493863e78c959e5cb2', routerStyle: '02', fees: [100, 500, 3000, 10000], gas: 200_000 },
     ],
   },
 }
