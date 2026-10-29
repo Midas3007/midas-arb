@@ -17,6 +17,18 @@ Tags: 🟢 easy (days) · 🟡 medium (a week or two) · 🔴 hard (weeks, needs
 - 🟢 Dashboard: connect wallet (MetaMask, Valora, WalletConnect), deposit, see shares/value/profit, public fund
   value and share price chart, risk disclosure.
 
+**Phase 1 status (29 Oct):** built and tested on a local chain; not deployed yet. Code: `fund-vault/` in the
+Hyperliquid-bot repo (contract, 14 tests, Termux `deploy` / `vault` / `keeper` commands, README) and the
+"On-chain fund" section of the site (connect wallet, deposit, redeem, cancel, collect; manager panel), which stays
+hidden until the vault address is set. Choices made while building:
+- Shares (MKF) cannot be transferred yet; transfers come in Phase 2 with their fee.
+- One settlement a day after 20:00 UTC (9 pm Lagos); the keeper also posts the value hourly for the share price.
+- Payouts are sent automatically; if a wallet refuses the transfer, the money waits for that member to collect it.
+- The reported value may move at most 50% a day (owner can change it, 48-hour delay, 1% to 500%).
+- The fee recipient (personal wallet) pays no fee; fee shares carry zero cost. Fee cap 20%, changes wait 48 hours.
+- No multisig in v1 (the bot wallet is owner, as decided); the 48-hour delay and instant pause cover role changes.
+- Not audited: testnet first, then mainnet with a small deposit cap.
+
 **Phase 2: more flexibility**
 - 🟡 Instant withdrawals (15% of profit + 0.3% into the fund).
 - 🟡 Transferable shares (15% of the sender's profit at transfer).
