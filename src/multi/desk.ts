@@ -3,7 +3,7 @@
 // Uses its OWN wallet (MULTI_PRIVATE_KEY) and its own switch (MULTI_LIVE=1); the Celo desk is never touched.
 // Trading logic (routes, size search, loss guard, kill switch) is the same tested code as the Celo desk.
 import 'dotenv/config'
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import {
   concat, createPublicClient, encodeAbiParameters, createWalletClient, encodeFunctionData, encodePacked, erc20Abi, fallback, formatUnits,
   http, parseAbi, parseUnits, zeroAddress, type Address, type Hex,
@@ -257,16 +257,36 @@ async function runChain(p: ChainProfile) {
   const v4Raw: PoolKey[] = []
   const allow = new Set((process.env[`${p.key.toUpperCase()}_ALLOW`] ?? '').split(',').map((a) => a.trim().toLowerCase()).filter(Boolean))
   if (p.auto) {
+    // Pool-creation logs, read from the chain itself (eth_getLogs in adaptive block ranges), with the
+    // explorer as a fallback. Results are saved, so later starts only read the new blocks.
+    const cacheFile = `${dir}/discovery.json`
+    const cache: Record<string, { last: string; logs: { topics: string[]; data: string }[] }> =
+      existsSync(cacheFile) ? (() => { try { return JSON.parse(readFileSync(cacheFile, 'utf8')) } catch { return {} } })() : {}
+    const head = await pub.getBlockNumber()
     const logsOf = async (address: string, topic0: string) => {
-      const out: any[] = []
-      for (let page = 1; page <= 20; page++) {
-        const url = `${p.auto!.blockscout}/api?module=logs&action=getLogs&address=${address}&topic0=${topic0}&fromBlock=0&toBlock=latest&page=${page}&offset=1000`
-        const j: any = await fetch(url, { signal: AbortSignal.timeout(30_000) }).then((r) => r.json()).catch((e) => { say(`token discovery: ${errMsg(e)}`); return null })
-        const rows = Array.isArray(j?.result) ? j.result : []
-        out.push(...rows)
-        if (rows.length < 1000) break
+      const ck = `${address}:${topic0}`.toLowerCase()
+      const c = cache[ck] ?? { last: '-1', logs: [] }
+      let from = BigInt(c.last) + 1n, span = 200_000n, lastNote = Date.now()
+      while (from <= head) {
+        const to = from + span - 1n > head ? head : from + span - 1n
+        try {
+          const rows: any[] = await pub.request({ method: 'eth_getLogs', params: [{ address: address as Address, topics: [topic0 as Hex], fromBlock: `0x${from.toString(16)}`, toBlock: `0x${to.toString(16)}` }] } as any)
+          for (const l of rows) c.logs.push({ topics: l.topics, data: l.data })
+          c.last = to.toString(); from = to + 1n
+          if (span < 2_000_000n && rows.length < 2000) span *= 2n
+          if (Date.now() - lastNote > 15_000) { say(`  reading pools... ${Math.round(Number(from) / Number(head) * 100)}%`); lastNote = Date.now() }
+        } catch (e) {
+          if (span <= 1_000n) { say(`token discovery: the RPC refused log queries (${errMsg(e)}); set ${p.key.toUpperCase()}_RPCS to one that allows them`); break }
+          span /= 4n
+        }
       }
-      return out
+      cache[ck] = c
+      if (!c.logs.length) { // explorer fallback
+        const url = `${p.auto!.blockscout}/api?module=logs&action=getLogs&address=${address}&topic0=${topic0}&fromBlock=0&toBlock=latest`
+        const j: any = await fetch(url, { signal: AbortSignal.timeout(30_000) }).then((r) => r.json()).catch(() => null)
+        if (Array.isArray(j?.result)) return j.result
+      }
+      return c.logs
     }
     const addr = (topic: string) => ('0x' + topic.slice(26)).toLowerCase()
     const pairs: [string, string][] = []
@@ -283,6 +303,7 @@ async function runChain(p: ChainProfile) {
       v4Raw.push({ currency0: c0 as Address, currency1: c1 as Address, fee, tickSpacing, hooks })
       pairs.push([c0, c1])
     }
+    try { writeFileSync(cacheFile, JSON.stringify(cache)) } catch { /* cache is optional */ }
     const count = new Map<string, number>()
     for (const [a, b] of pairs) { count.set(a, (count.get(a) ?? 0) + 1); count.set(b, (count.get(b) ?? 0) + 1) }
     const addrs = [...count.keys()].sort((a, b) => count.get(b)! - count.get(a)!).slice(0, 300)
