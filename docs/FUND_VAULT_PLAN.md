@@ -46,6 +46,12 @@ hidden until the vault address is set. Choices made while building:
   Kiyoshi under a process manager that restarts it, with the bot key in the server's secret store, logs and
   alerts (bot stopped, wallet value dropped, keeper missed a run), and the phone kept only for the owner's
   emergency commands (pause, role changes). The fund's settlement already runs on the server (Supabase keeper).
+  **Daily restart around settlement (decided):** so the bot wallet is flat (all USDT, no half-finished trade)
+  when the keeper settles at 20:07 UTC, the server stops the bot gracefully at **20:00 UTC** (it finishes the
+  current cycle and sells or holds any leftover under its loss guard), the keeper settles at 20:07, and the bot
+  starts again at **20:10 UTC**, so the day's new deposits are traded straight away. If the keeper reports
+  "settlement waiting", the bot stays stopped until the next keeper run settles, then starts. Scheduled with the
+  server's timer (cron or systemd timers); the times follow the keeper's schedule if that ever changes.
 
 **Before opening to the public (any phase):** legal advice.
 
