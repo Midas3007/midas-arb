@@ -48,9 +48,24 @@ Tags: 🟢 easy (days) · 🟡 medium (a week or two) · 🔴 hard (weeks, needs
   Gas (CELO) is a fund expense.
 - **Midas's personal wallet:** `0xf95E42d5FC3602b05CE9cF8d2E4cFa6b810F3113`. It receives Midas's opening shares
   and is the wallet Midas uses on the site. The bot wallet never connects to the site.
+- **Role split (decided):** day to day Midas only uses the personal wallet; the bot wallet stays on the phone.
+
+  | Power | Wallet | Notes |
+  |---|---|---|
+  | Owner: emergency pause, assign or replace the roles below | bot wallet | backup if the personal wallet is lost or stolen; role changes go through the 48-hour delay |
+  | Operator: trade the fund's money, post value, settle payouts | bot wallet | cannot change fees, roles or limits |
+  | Manager: raise or lower fee rates | personal wallet | hard cap written into the contract (e.g. 20%, cannot be raised); every change waits 48 hours so members can exit first |
+  | Fee recipient: fee shares are minted here | personal wallet | same as today's "fee units" |
+  | Fee exempt: no performance or transfer fee on its own shares | personal wallet | bot wallet holds no shares after launch |
+  | Withdrawals | whoever holds the shares | USDT is paid to the shareholder's own wallet (or an address that wallet chooses); nobody else, the bot wallet included, can redirect it |
+
+  If the personal wallet is compromised, the worst case is a queued fee change (capped, delayed and visible on the
+  dashboard); the owner (bot wallet) pauses the contract and replaces the manager. The site's admin page keeps
+  working from the Midas login and does not depend on either wallet.
 - **Share price starts at $1.00** in the new contract: Midas's opening position (about $113 at launch, exact
-  value taken from the wallet that day) becomes that many shares at $1.00. The old ledger is shown on the
-  dashboard as "Season 1 (off-chain)" with its result (+485% at the time of writing) and a link to the old site.
+  value taken from the wallet that day) becomes that many shares at $1.00. The site already keeps seasons:
+  finished seasons (Season 1: from Mon 26 Oct, off-chain) are archived with their return, trades and leaderboard
+  and shown on the public page; the on-chain contract starts as the next season.
 - **Site:** reuse the existing https://midas-kiyoshi-fund.vercel.app/ (add wallet connect, deposit, withdraw).
 - **Mobile only:** every step must be doable from the phone. Deploy the contract from Termux with a small
   script (compiles with solc-js, deploys with the bot wallet key that is already in `.env`, verifies on
