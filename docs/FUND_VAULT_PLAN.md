@@ -62,6 +62,21 @@ Tags: 🟢 easy (days) · 🟡 medium (a week or two) · 🔴 hard (weeks, needs
   If the personal wallet is compromised, the worst case is a queued fee change (capped, delayed and visible on the
   dashboard); the owner (bot wallet) pauses the contract and replaces the manager. The site's admin page keeps
   working from the Midas login and does not depend on either wallet.
+- **Using the bot wallet's powers (decided):** from Termux on the same phone, with a small command that signs with
+  the bot key already in `.env`. The bot wallet never connects to a website or wallet app. Every command shows
+  what it will do and asks for confirmation before sending.
+
+  | What | Command | Takes effect |
+  |---|---|---|
+  | Emergency pause | `npm run vault -- pause` | immediately: deposits, withdrawals and settlements stop; nobody's money moves |
+  | Unpause | `npm run vault -- unpause` | immediately |
+  | Replace a role | `npm run vault -- set-manager 0xNEW…` (also `set-operator`, `set-fee-recipient`, `set-owner`) | queued for 48 hours, shown on the dashboard; then `npm run vault -- execute manager` |
+  | Cancel a queued change | `npm run vault -- cancel manager` | immediately |
+  | Roles, settings and queued changes | `npm run vault -- status` | read-only |
+
+  Pause is instant because it cannot move money. Role changes wait 48 hours so a stolen bot key cannot quietly
+  take over; cancel is instant so a change you did not make can be stopped. If the personal wallet is stolen:
+  pause, queue a new manager, wait 48 hours, execute, unpause.
 - **Share price starts at $1.00** in the new contract: Midas's opening position (about $113 at launch, exact
   value taken from the wallet that day) becomes that many shares at $1.00. The site already keeps seasons:
   finished seasons (Season 1: from Mon 26 Oct, off-chain) are archived with their return, trades and leaderboard
