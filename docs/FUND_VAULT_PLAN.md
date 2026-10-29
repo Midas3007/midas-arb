@@ -42,7 +42,8 @@ hidden until the vault address is set. Choices made while building:
 
 **Optional, any time after Phase 1**
 - ⚪ Kiyoshi Pass membership NFT (see the section near the end).
-- 🟡 Host the bot on a cloud server instead of the phone: a small always-on VPS (or a cloud container) running
+- 🟢 Host the bot on a cloud server instead of the phone (**built 29 Oct: Render worker, see kiyoshi/HOSTING.md;
+  the daily restart became a pause inside the bot from 20:00 UTC until the keeper reports the day settled**): a small always-on VPS (or a cloud container) running
   Kiyoshi under a process manager that restarts it, with the bot key in the server's secret store, logs and
   alerts (bot stopped, wallet value dropped, keeper missed a run), and the phone kept only for the owner's
   emergency commands (pause, role changes). The fund's settlement already runs on the server (Supabase keeper).
