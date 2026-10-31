@@ -28,11 +28,12 @@ fast doesn't matter here, and small capital is enough to take what is there.
   swap costs under $0.01 (`MAX_SWAP_GAS_USD`).
 - **Exchanges:** Uniswap v3 (and Pancake, Sushi, DragonSwap) everywhere; **Aerodrome** on Base and **Velodrome** on
   Optimism (both their concentrated and classic stable/volatile pools); **Curve** on every chain (pools found
-  through Curve's API, meta pools traded through their underlying coins); **Mento** and **Textile** on Celo.
+  through Curve's API, meta pools traded through their underlying coins); **Mento** on Celo, **Textile** (RFQ at real FX rates) on Celo, Base and BSC.
   Pools that pair a coin with another dollar coin are reached in one hop through the cheapest exchange.
 - **Coins:** a hand-checked list of official addresses per chain (`src/hunter/chains.ts`): EURC, EURe, EURS, EURI,
   cNGN, BRZ, wBRL, wARS, IDRX, TRYB, XSGD, CADC, ZARP, MXNe, jCHF, jGBP, GBPe, Mento's KESm, GHSm, XOFm, NGNm...
-  and other dollar coins (they depeg too). Every address is checked on-chain at startup (its symbol must match), so
+  and other dollar coins (they depeg too). The full verified list, with what was rejected and why, is in
+  [docs/FX_COINS.md](docs/FX_COINS.md). Every address is checked on-chain at startup (its symbol must match), so
   copycat tokens with the same ticker are never traded. Add more with `BASE_PEGS=...` in `.env`.
 - **Fair price:** Mento's on-chain oracles (fresh within minutes on weekdays) plus open.er-api.com and the
   fawazahmed0 currency API (daily). A currency is tradable only when two fresh sources agree within 2%. FX markets

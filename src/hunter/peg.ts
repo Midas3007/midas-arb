@@ -12,14 +12,18 @@
 //   noticed; something stops people trading it (a paused token, a transfer tax). Skipped.
 // - Suspicious: a quote more than SUSPICIOUS_PCT away from fair is a broken pool or a fake token. Skipped.
 
-export type PegRules = { depegPct: number; suspiciousPct: number; stuckHours: number; minGapPct: number; minNetUsd: number }
+export type PegRules = { depegPct: number; suspiciousPct: number; stuckHours: number; minGapPct: number; minNetUsd: number; depegByCcy?: Record<string, number> }
 export const RULES: PegRules = {
   depegPct: Number(process.env.DEPEG_PCT ?? '3'),
   suspiciousPct: Number(process.env.SUSPICIOUS_PCT ?? '20'),
   stuckHours: Number(process.env.STUCK_HOURS ?? '24'),
   minGapPct: Number(process.env.MIN_GAP_PCT ?? '0.3'),
   minNetUsd: Number(process.env.MIN_NET_USD ?? '0.01'),
+  // Currencies whose free feeds give the official rate while crypto trades nearer the street rate: cNGN sits
+  // ~2% and wARS ~7% from the official rate on every chain and at Textile. Wider depeg limits for them.
+  depegByCcy: Object.fromEntries((process.env.DEPEG_PCT_CCY ?? 'NGN:5,ARS:12').split(',').filter(Boolean).map((x) => { const [c, v] = x.split(':'); return [c.trim().toUpperCase(), Number(v)] })),
 }
+const depegFor = (r: PegRules, ccy: string) => r.depegByCcy?.[ccy] ?? r.depegPct
 
 type Obs = { chain: string; token: string; ccy: string; venue: string; dev: number; at: number; offSince: number | null }
 const FRESH_MS = 15 * 60_000
@@ -32,7 +36,7 @@ export class PegBoard {
   observe(chain: string, token: string, ccy: string, venue: string, dev: number, at = Date.now()) {
     const k = `${chain}|${token}|${venue}`
     const prev = this.obs.get(k)
-    const off = Math.abs(dev) * 100 > this.rules.depegPct
+    const off = Math.abs(dev) * 100 > depegFor(this.rules, ccy)
     const back = Math.abs(dev) * 100 < 1
     const offSince = off ? (prev?.offSince ?? at) : back ? null : (prev?.offSince ?? null)
     this.obs.set(k, { chain, token, ccy, venue, dev, at, offSince })
@@ -46,7 +50,7 @@ export class PegBoard {
   private tokenDepeg(chain: string, token: string, now: number): { why: string; sign: number } | null {
     const os = this.fresh(now, (o) => o.chain === chain && o.token === token)
     if (os.length < 2) return null
-    const limit = this.rules.depegPct / 100
+    const limit = depegFor(this.rules, os[0].ccy) / 100
     if (os.every((o) => o.dev < -limit)) return { why: `${token} on ${chain}: all ${os.length} pools below the peg (${pct(Math.max(...os.map((o) => o.dev)))} or worse)`, sign: -1 }
     if (os.every((o) => o.dev > limit)) return { why: `${token} on ${chain}: all ${os.length} pools above the peg (${pct(Math.min(...os.map((o) => o.dev)))} or more)`, sign: 1 }
     return null

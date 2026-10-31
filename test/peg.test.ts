@@ -118,3 +118,11 @@ test('maxTradeUsd: 20% of cash, a $2 floor for small wallets, capped', () => {
   assert.equal(maxTradeUsd(10_000, o), 100)
   assert.equal(maxTradeUsd(0, o), 0)
 })
+
+test('depeg limit per currency: wARS 7% off the official rate everywhere is not a depeg', () => {
+  const b = new PegBoard({ ...R, depegByCcy: { ARS: 12 } })
+  b.observe('base', 'wARS', 'ARS', 'a', -0.07, WED); b.observe('base', 'wARS', 'ARS', 'b', -0.068, WED)
+  assert.equal(b.frozen('base', 'wARS', 'ARS', WED), null)
+  b.observe('base', 'wARS', 'ARS', 'a', -0.2, WED); b.observe('base', 'wARS', 'ARS', 'b', -0.19, WED)
+  assert.match(b.frozen('base', 'wARS', 'ARS', WED)!, /below the peg/)
+})

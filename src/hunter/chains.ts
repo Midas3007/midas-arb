@@ -91,6 +91,14 @@ export const CHAINS: Record<string, ChainProfile> = {
       PHPm: peg('0x105d4A9306D2E55a71d2Eb95B81553AE1dC20d7B', 'PHP', 'PHPM', 'PUSO'),
       COPm: peg('0x8A567e2aE79CA692Bd748aB832081C45de4041eA', 'COP', 'COPM', 'CCOP'),
       GHSm: peg('0xfAeA5F3404bbA20D3cc2f8C4B0A888F55a3c7313', 'GHS', 'GHSM', 'CGHS'),
+      // added 31 Oct after on-chain + route checks (docs/FX_COINS.md)
+      CHFm: peg('0xb55a79F398E759E43C95b979163f30eC87Ee131D', 'CHF', 'CHFM'),
+      EURA: peg('0xC16B81Af351BA9e64C1a069E3Ab18c244A1E3049', 'EUR', 'EURA'),
+      BRLA: peg('0xfecb3f7c54e2caae9dc6ac9060a822d47e053760', 'BRL', 'BRLA'),
+      USAT: peg('0xd2ab3c9a02dbbab236bfec45d1d755df4267f771', 'USD', 'USAT'),
+      IDRX: peg('0x18bc5bcc660cf2b9ce3cd51a404afe1a0cbd3c22', 'IDR', 'IDRX'),
+      wCOP: peg('0x8a1D45e102e886510e891d2Ec656a708991e2D76', 'COP', 'WCOP'), // Textile corridor
+      wMXN: peg('0x337E7456B420bD3481e7FA61fA9850343d610d34', 'MXN', 'WMXN'), // Textile corridor
       ...envPegs('celo'),
     },
     // Every other currency Mento lists (NGNm, ZARm, CADm, AUDm...) is added from Mento's Broker at startup.
@@ -119,10 +127,22 @@ export const CHAINS: Record<string, ChainProfile> = {
       BRZ: peg('0xE9185Ee218cae427aF7B9764A011bb89FeA761B4', 'BRL', 'BRZ'),
       ZARP: peg('0xb755506531786C8aC63B756BaB1ac387bACB0C04', 'ZAR', 'ZARP'),
       MXNe: peg('0x269caE7Dc59803e5C596c95756faEeBb6030E0aF', 'MXN', 'MXNE'),
+      MXNB: peg('0xF197FFC28c23E0309B5559e7a166f2c6164C80aA', 'MXN', 'MXNB'),
+      XSGD: peg('0x0A4C9cb2778aB3302996A34BeFCF9a8Bc288C33b', 'SGD', 'XSGD'),
+      TRYB: peg('0xFb8718a69aed7726AFb3f04D2Bd4bfDE1BdCb294', 'TRY', 'TRYB'),
+      VCHF: peg('0x1fcA74D9ef54a6AC80ffE7D3b14e76c4330Fd5D8', 'CHF', 'VCHF'),
+      ZCHF: peg('0xD4dD9e2F021BB459D5A5f6c24C12fE09c5D45553', 'CHF', 'ZCHF'),
+      EURA: peg('0xA61BeB4A3d02decb01039e378237032B351125B4', 'EUR', 'EURA'),
+      EURAU: peg('0x4933A85b5b5466Fbaf179F72D3DE273c287EC2c2', 'EUR', 'EURAU'),
+      EURe: peg('0xbf6e2966A9C3D99C9E4D069E04f7Bdb9C8aa762C', 'EUR', 'EURE'),
+      wARS: peg('0x0DC4F92879B7670e5f4e4e6e3c801D229129D90D', 'ARS', 'WARS'),
+      ZARU: peg('0xE205b4e7Ac03E3f7b2060C3EDf2171AA7126C0d5', 'ZAR', 'ZARU'), // Textile corridor (launched 2026; little supply yet)
       ...envPegs('base'),
     },
     curve: 'base', aave: '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5',
     solidly: [{ name: 'aerodrome-v2', router: '0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43', factory: '0x420DD381b31aEf6683db6B902084cB0FFECe40Da' }],
+    // Textile's reactor on base (docs.textilecredit.com/protocol/address-book)
+    textile: { api: process.env.TEXTILE_API ?? 'https://api.textilecredit.com', reactor: '0xEb5A29F869FF084B3Fce18d3487a38A56feDC59E' },
     dexes: [
       uniV3('0x33128a8fC17869897dcE68Ed026d694621f6FDfD', '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a', '0x2626664c2603336E57B271c5C0b26F421741e481'),
       slipstream('aerodrome', '0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A', '0x254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0', '0xBE6D8f0d05cC4be24d5167a3eF062215bE6D18a5'),
@@ -149,9 +169,12 @@ export const CHAINS: Record<string, ChainProfile> = {
       TRYB: peg('0xC1fdbed7Dac39caE2CcC0748f7a80dC446F6a594', 'TRY', 'TRYB'),
       IDRX: peg('0x649a2DA7B28E0D54c13D5eFf95d3A660652742cC', 'IDR', 'IDRX'),
       EURI: peg('0x9d1A7A3191102e9F900Faa10540837ba84dCBAE7', 'EUR', 'EURI'),
+      EURA: peg('0x12f31B73D812C6Bb0d735a218c086d44D5fe5f89', 'EUR', 'EURA'),
       ...envPegs('bsc'),
     },
     curve: 'bsc', aave: '0x6807dc923806fE8Fd134338EABCA509979a7e0cB',
+    // Textile's reactor on bsc (docs.textilecredit.com/protocol/address-book)
+    textile: { api: process.env.TEXTILE_API ?? 'https://api.textilecredit.com', reactor: '0xe03261c0436DB575F92F09EdDF3591E2566B7D97' },
     dexes: [
       { name: 'pancake', factory: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', quoter: '0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997',
         router: '0x13f4EA83D0bd40E75C8222255bc855a974568Dd4', routerStyle: '02', fees: [100, 500, 2500, 10000], gas: 180_000 },
@@ -174,13 +197,20 @@ export const CHAINS: Record<string, ChainProfile> = {
       BRZ: peg('0x4eD141110F6EeeAbA9A1df36d8c26f684d2475Dc', 'BRL', 'BRZ'),
       XSGD: peg('0xDC3326e71D45186F113a2F448984CA0e8D201995', 'SGD', 'XSGD'),
       EURS: peg('0xE111178A87A3BFf0c8d18DECBa5798827539Ae99', 'EUR', 'EURS'),
-      EURe: peg('0x18ec0A6E18E5bc3784fDd3a3634b31245ab704F6', 'EUR', 'EURE'),
+      EURe: peg('0xE0aEa583266584DafBB3f9C3211d5588c73fEa8d', 'EUR', 'EURE'), // Monerium v2 (v1 0x18ec... has no route)
       jEUR: peg('0x4e3Decbb3645551B8A19f0eA1678079FCB33fB4c', 'EUR', 'JEUR'),
       jCHF: peg('0xbD1463F02f61676d53fd183C2B19282BFF93D099', 'CHF', 'JCHF'),
       jGBP: peg('0x767058F11800FBA6A682E73A6e79ec5eB74Fac8c', 'GBP', 'JGBP'),
       TRYB: peg('0x4Fb71290Ac171E1d144F7221D882BECAc7196EB5', 'TRY', 'TRYB'),
       IDRX: peg('0x649a2DA7B28E0D54c13D5eFf95d3A660652742cC', 'IDR', 'IDRX'),
       cNGN: peg('0x52828daa48C1a9A06F37500882b42daf0bE04C3B', 'NGN', 'CNGN'),
+      BRLA: peg('0xe6a537a407488807f0bbeb0038b79004f19dddfb', 'BRL', 'BRLA'),
+      wBRL: peg('0xD76f5Faf6888e24D9F04Bf92a0c8B921FE4390e0', 'BRL', 'WBRL'),
+      ZARP: peg('0xb755506531786C8aC63B756BaB1ac387bACB0C04', 'ZAR', 'ZARP'),
+      CADC: peg('0x9de41aFF9f55219D5bf4359F167d1D0c772A396D', 'CAD', 'CADC'),
+      ZCHF: peg('0x02567e4b14b25549331fCEe2B56c647A8bAB16FD', 'CHF', 'ZCHF'),
+      EURA: peg('0xE0B52e49357Fd4DAf2c15e02058DCE6BC0057db4', 'EUR', 'EURA'),
+      JPYC: peg('0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29', 'JPY', 'JPYC'), // current JPYC; the two older ones trade ~45% off
       ...envPegs('polygon'),
     },
     curve: 'polygon', aave: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
@@ -204,6 +234,8 @@ export const CHAINS: Record<string, ChainProfile> = {
     },
     pegs: {
       EURe: peg('0x0c06cCF38114ddfc35e07427B9424adcca9F44F8', 'EUR', 'EURE'),
+      MXNB: peg('0xF197FFC28c23E0309B5559e7a166f2c6164C80aA', 'MXN', 'MXNB'),
+      EURA: peg('0xFA5Ed56A203466CbBC2430a43c66b9D8723528E7', 'EUR', 'EURA'),
       ...envPegs('arbitrum'),
     },
     curve: 'arbitrum', aave: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
@@ -228,8 +260,9 @@ export const CHAINS: Record<string, ChainProfile> = {
       WETH: { address: '0x4200000000000000000000000000000000000006', decimals: 18 },
     },
     pegs: {
-      sUSD: peg('0x8c6f28f2F1A3C87F0f938b96d27520d9751ec8d9', 'USD', 'SUSD'),
       EURA: peg('0x9485aca5bbBE1667AD97c7fE7C4531a624C8b1ED', 'EUR', 'EURA', 'AGEUR'),
+      EURC: peg('0xDCB612005417Dc906fF72c87DF732e5a90D49e11', 'EUR', 'EURC'),
+      ZCHF: peg('0xD4dD9e2F021BB459D5A5f6c24C12fE09c5D45553', 'CHF', 'ZCHF'),
       ...envPegs('optimism'),
     },
     curve: 'optimism', aave: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
@@ -252,6 +285,12 @@ export const CHAINS: Record<string, ChainProfile> = {
     },
     pegs: {
       EURC: peg('0xC891EB4cbdEFf6e073e859e987815Ed1505c2ACD', 'EUR', 'EURC'),
+      MXNB: peg('0xF197FFC28c23E0309B5559e7a166f2c6164C80aA', 'MXN', 'MXNB'),
+      XSGD: peg('0xb2F85b7AB3c2b6f62DF06dE6aE7D09c010a5096E', 'SGD', 'XSGD'),
+      TRYB: peg('0x564A341Df6C126f90cf3ECB92120FD7190ACb401', 'TRY', 'TRYB'),
+      BRZ: peg('0x491a4eB4f1FC3BfF8E1d2FC856a6A46663aD556f', 'BRL', 'BRZ'),
+      VCHF: peg('0x228a48df6819CCc2eCa01e2192ebAFfFdAD56c19', 'CHF', 'VCHF'),
+      JPYC: peg('0x431D5dfF03120AFA4bDf332c61A6e1766eF37BDB', 'JPY', 'JPYC'),
       ...envPegs('avalanche'),
     },
     curve: 'avalanche', aave: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
@@ -270,6 +309,9 @@ export const CHAINS: Record<string, ChainProfile> = {
     pegs: {
       EURe: peg('0x420CA0f9B9b604cE0fd9C18EF134C705e5Fa3430', 'EUR', 'EURE'),
       GBPe: peg('0x8E34bfEC4f6Eb781f9743D9b4af99CD23F9b7053', 'GBP', 'GBPE'),
+      EURA: peg('0x4b1E2c2762667331Bc91648052F646d1b0d35984', 'EUR', 'EURA'),
+      BRLA: peg('0xfecb3f7c54e2caae9dc6ac9060a822d47e053760', 'BRL', 'BRLA'),
+      JPYC: peg('0x417602f4fbdd471A431Ae29fB5fe0A681964C11b', 'JPY', 'JPYC'),
       ...envPegs('gnosis'),
     },
     curve: 'xdai', aave: '0xb50201558B00496A145fE76f7424749556E326D8',
