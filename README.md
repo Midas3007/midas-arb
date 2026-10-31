@@ -118,14 +118,18 @@ for the same chain. Copy `data/` along so the ledger and sweep marks carry over.
 Create a bot with @BotFather, message it once, read your chat id from
 `https://api.telegram.org/bot<TOKEN>/getUpdates`, put both in `.env`. Only your chat is obeyed.
 
-| Command | |
+Send `/menu` (or `/start`) for the **command panel**: buttons that update the same message in place.
+
+| Button / command | |
 |---|---|
-| `/status` | profit (all time, today, not yet swept, swept), each chain's mode, cash and results |
-| `/chains` | each chain's mode and why |
-| `/chain base live` | also `watch`, `off`, `auto` |
-| `/gaps` | pools furthest from their peg right now (`/gaps 1` = at least 1%) |
-| `/withdraw` | sweep profit now |
-| `/pause` `/resume` | stop / restart new trades |
+| 📊 Status · `/status` | profit (all time, today, not yet swept, swept), each chain's mode, cash and results |
+| 📡 Scans · `/scans` | each chain's latest scan line: what it is seeing right now, how long ago, gas per swap |
+| 🎯 Gaps · `/gaps` | pools furthest from their peg (buttons for ≥0.2%, 0.5%, 1%, 3%) |
+| ⛓ Chains · `/chains` | each chain's mode; tap a chain for 🟢 live · 👀 watch · ⛔ off · 🤖 auto |
+| 💸 Withdraw · `/withdraw` | sweep profit now (asks to confirm) |
+| ⏯ Pause / Resume · `/pause` `/resume` | stop / restart new trades |
+
+The commands also appear in Telegram's "/" menu. Typed `/chain base live` still works.
 
 Alerts: start, trades of $1 or more, depeg freezes, new pools of our coins, chains promoted or paused, sweeps,
 failed second legs.
