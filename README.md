@@ -58,8 +58,10 @@ idea applies with the stock price as the fair price:
   so most stocks pause until they agree again.
 - **Routes:** between a stock's v3 fee tiers (through the deepest USDG/WETH pool) and its v4 tiers: 1,222 routes
   over 100+ stocks. Every scan first estimates all routes from one buy and one sell quote per pool, and quotes
-  exactly only the ones that come close (`PREFILTER_FROM`). A scan takes 3-4 minutes on the free public RPC (it
-  throttles above ~8 quotes at once); your own RPC in `ROBINHOOD_RPCS` with `ROBINHOOD_RPC_CONCURRENCY` is faster.
+  exactly only the ones that come close (`PREFILTER_FROM`).
+- **Light on paid RPCs:** only the 25 deepest stocks (`ROBINHOOD_MAX_STOCKS`, ranked by WETH in their pools; add
+  favourites with `ROBINHOOD_STOCKS`), a full scan every 2 minutes and pool-trade checks every 15 seconds
+  (`<CHAIN>_INTERVAL_SEC`, `<CHAIN>_WATCH_MS` work for any chain). A scan takes under a minute on the free RPC.
 
 ## Traps it avoids
 

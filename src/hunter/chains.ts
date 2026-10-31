@@ -31,6 +31,8 @@ export type ChainProfile = {
   rpcs: string[]
   cashName: string // what the cash token really is, for messages
   rpcConcurrency?: number // quotes in flight at once (default 8; RPC_CONCURRENCY or <CHAIN>_RPC_CONCURRENCY override)
+  intervalSec?: number // seconds between full scans (default INTERVAL_SEC, 20; <CHAIN>_INTERVAL_SEC overrides)
+  watchMs?: number // how often to check watched pools for trades (default WATCH_MS, 1500; <CHAIN>_WATCH_MS overrides)
   native: string // key of the wrapped gas token in `tokens`, used to price gas
   minGas: string // below this much native gas the chain counts as empty
   lifiNative?: Address // LI.FI's address for the gas token when it is not 0x000…0 (Celo)
@@ -40,7 +42,7 @@ export type ChainProfile = {
   solidly?: { name: string; router: Address; factory: Address }[] // Aerodrome/Velodrome classic stable + volatile pools
   curve?: string // Curve's API name for the chain: its pools are found there
   aave?: Address // Aave v3 Pool: idle cash earns interest here between trades
-  stocks?: { api: string } // Robinhood: official stock tokens and their prices come from Robinhood's own API
+  stocks?: { api: string; max: number } // Robinhood: official stock tokens and their prices from Robinhood's API; the `max` deepest are watched
   v4?: V4Config // Uniswap v4: standard (hookless) pools, one venue per fee tier
   mento?: { broker: Address; hub: string } // Celo: Mento, oracle-priced exchange; trades `hub` (USDm) for each currency
   textile?: { api: string; reactor: Address } // Celo: Textile FX, RFQ market makers quoting at real FX rates
@@ -357,13 +359,16 @@ CHAINS.robinhood = {
   key: 'robinhood', chain: robinhoodChain,
   rpcs: list(process.env.ROBINHOOD_RPCS, ['https://rpc.mainnet.chain.robinhood.com']),
   cashName: 'USDG', native: 'WETH', minGas: '0.0002', // its public RPC throttles heavy quote calls above ~8 at once
+  // Fewer calls here (paid RPCs charge per call, and stock gaps last minutes): full scan every 2 minutes, pool-trade
+  // checks every 15 seconds, and only the deepest stocks (ROBINHOOD_MAX_STOCKS).
+  intervalSec: 120, watchMs: 15_000,
   hubs: ['WETH'],
   tokens: {
     USDT: { address: '0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168', decimals: 6, ccy: 'USD' }, // USDG (Paxos), docs.robinhood.com/chain/contracts
     WETH: { address: '0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73', decimals: 18 },
   },
   pegs: {},
-  stocks: { api: process.env.ROBINHOOD_API ?? 'https://api.robinhood.com/rhj' },
+  stocks: { api: process.env.ROBINHOOD_API ?? 'https://api.robinhood.com/rhj', max: Number(process.env.ROBINHOOD_MAX_STOCKS ?? '25') },
   v4: { // developers.uniswap.org v4 deployments; the Universal Router was redeployed on 2026-07-06
     poolManager: '0x8366a39cc670b4001a1121b8f6a443a643e40951', quoter: '0x8dc178efb8111bb0973dd9d722ebeff267c98f94',
     routers: ['0x06afBA43fd06227fA663b0dAeCF536F6eaA6BF99', '0x8876789976decbfcbbbe364623c63652db8c0904'],

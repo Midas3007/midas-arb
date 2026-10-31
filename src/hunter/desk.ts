@@ -279,7 +279,22 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       T[a.tokenSymbol] = { address: d.contractAddress, decimals: Number(a.tokenDecimals ?? 18), ccy: `STOCK:${a.tokenSymbol}` }
       multipliers.set(a.tokenSymbol, Number(a.currentMultiplier ?? '1') || 1)
     }
-    say(`${multipliers.size} official stock tokens from Robinhood's asset list`)
+    // Keep the deepest: rank by the WETH sitting in each stock's Uniswap v3 pools (two batched reads).
+    // ROBINHOOD_STOCKS=NVDA,TSLA always included; ROBINHOOD_MAX_STOCKS=0 keeps all.
+    const forced = new Set((process.env.ROBINHOOD_STOCKS ?? '').split(',').map((x) => x.trim().toUpperCase()).filter(Boolean))
+    const all = [...multipliers.keys()]
+    if (p.stocks.max > 0 && all.length > p.stocks.max && T.WETH && p.dexes[0]) {
+      const d0 = p.dexes[0], fees = d0.fees
+      const pools = await pub.multicall({ allowFailure: true, contracts: all.flatMap((X) => fees.map((f) => ({ address: d0.factory, abi: factoryAbi, functionName: 'getPool', args: [T[X].address, T.WETH.address, f] } as const))) }).catch(() => [])
+      const addrsOf = all.map((_, i) => fees.map((_, j) => pools[i * fees.length + j]).filter((r: any) => r?.status === 'success' && r.result !== zeroAddress).map((r: any) => r.result as Address))
+      const bals = await pub.multicall({ allowFailure: true, contracts: addrsOf.flat().map((a) => ({ address: T.WETH.address, abi: erc20Abi, functionName: 'balanceOf', args: [a] } as const)) }).catch(() => [])
+      let k = 0
+      const depth = new Map(all.map((X, i) => [X, addrsOf[i].reduce((s) => { const r: any = bals[k++]; return s + (r?.status === 'success' ? Number(r.result) / 1e18 : 0) }, 0)]))
+      const keep = new Set([...all].sort((a, b) => depth.get(b)! - depth.get(a)!).slice(0, p.stocks.max))
+      for (const X of forced) if (multipliers.has(X)) keep.add(X)
+      for (const X of all) if (!keep.has(X)) { delete T[X]; multipliers.delete(X) }
+      say(`${all.length} official stock tokens from Robinhood's asset list; watching the ${keep.size} deepest: ${[...keep].join(' ')}`)
+    } else say(`${multipliers.size} official stock tokens from Robinhood's asset list`)
   }
 
   const venues: DexVenue[] = []
@@ -332,7 +347,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   const corridors = () => Object.keys(T).filter((k) => k !== 'USDT' && T[k].ccy)
   const ccyOf = (X: string) => T[X]?.ccy ?? 'USD'
 
-  const watcher = new PoolWatcher(pub as any)
+  const watcher = new PoolWatcher(pub as any, n(`${p.key.toUpperCase()}_WATCH_MS`, String(p.watchMs ?? process.env.WATCH_MS ?? 1500)))
 
   // ---------- discovery ----------
   let routes: Route[] = [], discoveredAt = 0
@@ -627,7 +642,8 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   status.started = true
   say(`${ctx.live ? 'LIVE switch on' : 'WATCH ONLY (HUNTER_LIVE=0)'} | mode ${st().mode} | wallet ${account.address} | cash ${p.cashName} | ${venues.map((v) => v.name).join(' + ')}${added.length ? ` | coins: ${added.join(' ')}` : ''}`)
   // MODE both (default): full scan every INTERVAL, and rescan as soon as a watched pool trades.
-  const fullEvery = MODE === 'watch' ? n('WATCH_FULL_MIN', '10') * 60_000 : INTERVAL_MS
+  const intervalMs = n(`${p.key.toUpperCase()}_INTERVAL_SEC`, String(p.intervalSec ?? INTERVAL_MS / 1000)) * 1000
+  const fullEvery = MODE === 'watch' ? n('WATCH_FULL_MIN', '10') * 60_000 : intervalMs
   let focus: Set<string> | null = null, lastFull = 0
   while (!ctx.stopping()) {
     if (!focus) lastFull = Date.now()
