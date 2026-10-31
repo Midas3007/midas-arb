@@ -8,7 +8,8 @@
 //
 // Exchanges are Uniswap-v3-style (same factory/quoter/router interface). Their contracts are checked on startup
 // too: an exchange whose contracts are missing is dropped with a message.
-import type { Address, Chain } from 'viem'
+import { defineChain, type Address, type Chain } from 'viem'
+import type { V4Config } from './v4.js'
 import { arbitrum, avalanche, base, bsc, celo, gnosis, optimism, polygon, sei } from 'viem/chains'
 
 export type Dex = {
@@ -29,6 +30,7 @@ export type ChainProfile = {
   chain: Chain
   rpcs: string[]
   cashName: string // what the cash token really is, for messages
+  rpcConcurrency?: number // quotes in flight at once (default 8; RPC_CONCURRENCY or <CHAIN>_RPC_CONCURRENCY override)
   native: string // key of the wrapped gas token in `tokens`, used to price gas
   minGas: string // below this much native gas the chain counts as empty
   lifiNative?: Address // LI.FI's address for the gas token when it is not 0x000…0 (Celo)
@@ -38,6 +40,8 @@ export type ChainProfile = {
   solidly?: { name: string; router: Address; factory: Address }[] // Aerodrome/Velodrome classic stable + volatile pools
   curve?: string // Curve's API name for the chain: its pools are found there
   aave?: Address // Aave v3 Pool: idle cash earns interest here between trades
+  stocks?: { api: string } // Robinhood: official stock tokens and their prices come from Robinhood's own API
+  v4?: V4Config // Uniswap v4: standard (hookless) pools, one venue per fee tier
   mento?: { broker: Address; hub: string } // Celo: Mento, oracle-priced exchange; trades `hub` (USDm) for each currency
   textile?: { api: string; reactor: Address } // Celo: Textile FX, RFQ market makers quoting at real FX rates
   dexes: Dex[]
@@ -338,6 +342,34 @@ export const CHAINS: Record<string, ChainProfile> = {
       uniV3('0x75fc67473a91335b5b8f8821277262a13b38c9b3', '0x807f4e281b7a3b324825c64ca53c69f0b418de40', '0xdd489c75be1039ec7d843a6ac2fd658350b067cf'),
     ],
   },
+}
+
+const robinhoodChain = defineChain({
+  id: 4663, name: 'Robinhood Chain', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  rpcUrls: { default: { http: ['https://rpc.mainnet.chain.robinhood.com'] } },
+  contracts: { multicall3: { address: '0xcA11bde05977b3631167028862bE2a173976CA11' } },
+})
+// Robinhood Chain: stock tokens instead of currencies. The fair price of a stock token is the stock's price times
+// its dividend multiplier, from Robinhood's API and Hyperliquid's 24/7 stock perps. Only the 200+ addresses in
+// Robinhood's official asset list are traded: the chain is full of copycats (several fake "USDG" and "USDC" with
+// a billion tokens dumped into empty pools), so even the cash token is the one on Robinhood's contracts page.
+CHAINS.robinhood = {
+  key: 'robinhood', chain: robinhoodChain,
+  rpcs: list(process.env.ROBINHOOD_RPCS, ['https://rpc.mainnet.chain.robinhood.com']),
+  cashName: 'USDG', native: 'WETH', minGas: '0.0002', // its public RPC throttles heavy quote calls above ~8 at once
+  hubs: ['WETH'],
+  tokens: {
+    USDT: { address: '0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168', decimals: 6, ccy: 'USD' }, // USDG (Paxos), docs.robinhood.com/chain/contracts
+    WETH: { address: '0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73', decimals: 18 },
+  },
+  pegs: {},
+  stocks: { api: process.env.ROBINHOOD_API ?? 'https://api.robinhood.com/rhj' },
+  v4: { // developers.uniswap.org v4 deployments; the Universal Router was redeployed on 2026-07-06
+    poolManager: '0x8366a39cc670b4001a1121b8f6a443a643e40951', quoter: '0x8dc178efb8111bb0973dd9d722ebeff267c98f94',
+    routers: ['0x06afBA43fd06227fA663b0dAeCF536F6eaA6BF99', '0x8876789976decbfcbbbe364623c63652db8c0904'],
+    permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+  },
+  dexes: [uniV3('0x1f7d7550b1b028f7571e69a784071f0205fd2efa', '0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7', '0xcaf681a66d020601342297493863e78c959e5cb2', 200_000)],
 }
 
 // Which chains run: HUNTER_CHAINS=celo,base,... (default: all of them).

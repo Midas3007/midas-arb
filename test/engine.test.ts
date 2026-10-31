@@ -125,3 +125,13 @@ test('exit impact: sizes that push the exit pool more than the limit are not cho
   assert.ok(exitImpactBps(free[0], probe) > 100)
   assert.ok(capped[0].size < free[0].size)
 })
+
+test('prefilter keeps the profitable route and drops clearly losing ones', async () => {
+  const { prefilterRoutes, buildRoutes } = await import('../src/engine.js')
+  const cheap = amm('cheap', 1.02, 100_000), fair1 = amm('fair1', 1.0, 100_000), fair2 = amm('fair2', 1.0, 100_000)
+  const routes = buildRoutes(new Map([['cheap', new Set(['X'])], ['fair1', new Set(['X'])], ['fair2', new Set(['X'])]]), [cheap, fair1, fair2])
+  const kept = await prefilterRoutes(routes, $(1))
+  const names = kept.map((r) => `${r.buy.name}>${r.sell.name}`)
+  assert.ok(names.includes('cheap>fair1') && names.includes('cheap>fair2'))
+  assert.ok(!names.includes('fair1>cheap') && !names.includes('fair2>cheap'))
+})

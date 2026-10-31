@@ -24,8 +24,8 @@ fast doesn't matter here, and small capital is enough to take what is there.
  new pools checked within 60 s                         depeg · stuck pool · suspicious price · exit pool too thin
 ```
 
-- **Chains:** Celo, Base, BSC, Polygon, Arbitrum, Optimism, Avalanche, Gnosis, Sei. A chain trades only while a
-  swap costs under $0.01 (`MAX_SWAP_GAS_USD`).
+- **Chains:** Celo, Base, BSC, Polygon, Arbitrum, Optimism, Avalanche, Gnosis, Sei, and Robinhood Chain (stock
+  tokens, below). A chain trades only while a swap costs under $0.01 (`MAX_SWAP_GAS_USD`).
 - **Exchanges:** Uniswap v3 (and Pancake, Sushi, DragonSwap) everywhere; **Aerodrome** on Base and **Velodrome** on
   Optimism (both their concentrated and classic stable/volatile pools); **Curve** on every chain (pools found
   through Curve's API, meta pools traded through their underlying coins); **Mento** on Celo, **Textile** (RFQ at real FX rates) on Celo, Base and BSC.
@@ -41,6 +41,25 @@ fast doesn't matter here, and small capital is enough to take what is there.
 - **Both legs on one chain:** no bridging per trade; gas is a fraction of a cent.
 - **Each chain earns its place:** it watches for 3 days first, goes live only if it saw real gaps, and is paused
   if it stops making money.
+
+## Robinhood Chain: stock tokens
+
+Robinhood Chain has no FX coins, but it has **200+ official stock tokens** (NVDA, TSLA, AAPL, SPY, QQQ, GLD, MSTR...)
+trading in Uniswap v3 pools against WETH and Uniswap v4 pools against USDG, often at several fee tiers. The same
+idea applies with the stock price as the fair price:
+
+- **Only official tokens:** the list and addresses come from Robinhood's own asset API (cached). The chain is full
+  of copycats: several fake "USDG" and "USDC" with a billion tokens dumped into empty pools, and fake "HoodUSD",
+  "Robinhood Gold"... so even the cash token (USDG, Paxos) is the one on Robinhood's contracts page.
+- **Fair price:** Robinhood's own token price (bid/ask, already times the token's dividend multiplier: a token can
+  be worth e.g. 1.0011 shares) and Hyperliquid's 24/7 stock perps (times the multiplier). They must agree within
+  1.5% (`STOCK_AGREE_PCT`). For stocks Hyperliquid doesn't list, Robinhood's price stands alone (it is the issuer's;
+  `STOCK_SINGLE_SOURCE=0` to require both). Over weekends Robinhood's price stands still while the perps trade,
+  so most stocks pause until they agree again.
+- **Routes:** between a stock's v3 fee tiers (through the deepest USDG/WETH pool) and its v4 tiers: 1,222 routes
+  over 100+ stocks. Every scan first estimates all routes from one buy and one sell quote per pool, and quotes
+  exactly only the ones that come close (`PREFILTER_FROM`). A scan takes 3-4 minutes on the free public RPC (it
+  throttles above ~8 quotes at once); your own RPC in `ROBINHOOD_RPCS` with `ROBINHOOD_RPC_CONCURRENCY` is faster.
 
 ## Traps it avoids
 

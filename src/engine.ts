@@ -77,6 +77,32 @@ export async function bestSize(route: Route, minSize: bigint, maxSize: bigint, g
 // every size: one quote rules it out, and only routes with a positive edge get the full size search.
 // This cuts the RPC work of a scan by most of it.
 // maxExitImpactBps: sizes that move the exit pool's price more than this are not considered (see exitImpactBps).
+// Prefilter: with many pools per coin, quoting every route exactly is slow. Instead each venue is asked once per
+// coin for a buy price and once for a sell price (on a common token amount), every route's edge is estimated from
+// those, and only routes that come out (nearly) positive get exact quotes. At these tiny sizes prices are close to
+// linear, and a small allowance (0.1% of the trade) keeps borderline routes in.
+export async function prefilterRoutes(routes: Route[], probe: bigint): Promise<Route[]> {
+  const coins = [...new Set(routes.map((r) => r.X))]
+  const keep: Route[] = []
+  await Promise.all(coins.map(async (X) => {
+    const rs = routes.filter((r) => r.X === X)
+    const venues = [...new Set(rs.flatMap((r) => [r.buy, r.sell]))]
+    const buys = new Map<Venue, bigint>()
+    await Promise.all(venues.map(async (v) => { const q = await v.quote('USDT', X, probe).catch(() => null); if (q && q > 0n) buys.set(v, q) }))
+    if (!buys.size) return
+    const ref = [...buys.values()].reduce((a, b) => (b > a ? b : a))
+    const sells = new Map<Venue, bigint>()
+    await Promise.all(venues.map(async (v) => { const q = await v.quote(X, 'USDT', ref).catch(() => null); if (q && q > 0n) sells.set(v, q) }))
+    for (const r of rs) {
+      const b = buys.get(r.buy), sl = sells.get(r.sell)
+      if (!b || !sl) continue
+      const est = (sl * b) / ref // dollars back from selling what $probe bought on r.buy
+      if (est * 1000n >= probe * 999n) keep.push(r)
+    }
+  }))
+  return keep
+}
+
 export async function scanRoutes(routes: Route[], minSize: bigint, maxSize: bigint, gasUsdFor: (r: Route) => number, maxExitImpactBps = Infinity): Promise<Opp[]> {
   const found = await Promise.all(routes.map(async (r) => {
     const probe = await evaluate(r, minSize, gasUsdFor(r)).catch(() => null)

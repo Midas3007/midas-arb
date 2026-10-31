@@ -49,3 +49,6 @@ exchange rate on cheap-gas EVM chains and trades them back, with both legs on on
    went from 206 to 308 routes, Optimism 84 to 128, Gnosis 0 to 4. Still open: Balancer, LFJ, Uniswap v4.
 6. ~~Other income~~ **done 31 Oct:** idle cash in Aave v3 between trades; Merkl reward claims.
 7. Capped inventory (one swap per gap instead of a round trip; cross-chain without per-trade bridging).
+8. ~~Robinhood Chain~~ **done 31 Oct:** official stock tokens from Robinhood's API, fair price from Robinhood +
+   Hyperliquid, Uniswap v3 tiers via WETH and v4 tiers vs USDG; route prefilter and per-tier hub lanes.
+9. ~~FX coins on all chains~~ **done 31 Oct:** see docs/FX_COINS.md; Textile on Base and BSC.

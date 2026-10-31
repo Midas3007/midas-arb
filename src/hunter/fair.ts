@@ -28,7 +28,7 @@ export function maxAgeMs(kind: 'live' | 'daily', now: number): number {
   if (kind === 'live') return fxClosed(now) ? 80 * h : 2 * h
   return fxClosed(now) ? 96 * h : 36 * h
 }
-const KIND: Record<string, 'live' | 'daily'> = { mento: 'live', erapi: 'daily', fawaz: 'daily' }
+const KIND: Record<string, 'live' | 'daily'> = { mento: 'live', erapi: 'daily', fawaz: 'daily', robinhood: 'live', hyperliquid: 'live' }
 
 const median = (xs: number[]) => {
   const s = [...xs].sort((a, b) => a - b), m = s.length >> 1
@@ -74,6 +74,32 @@ export class FairPrices {
     batch: { multicall: true },
   })
   errors: string[] = []
+  // Stock tokens (Robinhood Chain): symbol -> dividend multiplier (a token is worth this many shares).
+  private stocks = new Map<string, number>()
+  private stocksAt = 0
+  readonly stockAgreePct = Number(process.env.STOCK_AGREE_PCT ?? '1.5')
+  watchStocks(list: { symbol: string; multiplier: number }[]) { for (const s of list) this.stocks.set(s.symbol, s.multiplier); this.stocksAt = 0 }
+
+  // Robinhood's own token price (bid/ask mid, already times the multiplier) and Hyperliquid's 24/7 stock perp
+  // (times the multiplier). Over weekends Robinhood's quote stands still while the perp trades, so the two drift
+  // apart and the stock is not traded until they agree again.
+  private async refreshStocks(now: number) {
+    if (!this.stocks.size) return
+    const api = process.env.ROBINHOOD_API ?? 'https://api.robinhood.com/rhj'
+    const hl: any = await fetch('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'metaAndAssetCtxs', dex: 'xyz' }), signal: AbortSignal.timeout(20_000) })
+      .then((r) => r.json()).catch((e) => { this.errors.push(`hyperliquid: ${e?.message ?? e}`); return null })
+    const hlPx = new Map<string, number>()
+    if (Array.isArray(hl)) hl[0]?.universe?.forEach((u: any, i: number) => { const px = Number(hl[1]?.[i]?.markPx); if (px > 0) hlPx.set(String(u.name).split(':').pop()!, px) })
+    for (const [sym, mult] of this.stocks) {
+      const ccy = `STOCK:${sym}`
+      if (hlPx.has(sym)) this.put(ccy, { source: 'hyperliquid', usdPer: hlPx.get(sym)! * mult, at: now })
+      const j: any = await fetch(`${api}/prices/${sym}`, { signal: AbortSignal.timeout(15_000) }).then((r) => r.json()).catch(() => null)
+      const q = j?.quotes?.[0]
+      const bid = Number(q?.tokenBid), ask = Number(q?.tokenAsk)
+      if (q && !q.isTradingHalt && bid > 0 && ask > 0) this.put(ccy, { source: 'robinhood', usdPer: (bid + ask) / 2, at: Date.parse(q.generatedAt) || now })
+      await new Promise((r) => setTimeout(r, 50)) // well under Robinhood's 60 requests/second
+    }
+  }
 
   private put(ccy: string, q: Quote) {
     if (!this.quotes.has(ccy)) this.quotes.set(ccy, new Map())
@@ -136,10 +162,14 @@ export class FairPrices {
     const jobs: Promise<unknown>[] = []
     if (now - this.mentoAt > 120_000) { this.mentoAt = now; jobs.push(this.refreshMento(now).catch((e) => this.errors.push(`mento: ${String(e?.shortMessage ?? e?.message ?? e).split('\n')[0]}`))) }
     if (now - this.dailyAt > 3_600_000) { this.dailyAt = now; jobs.push(this.refreshDaily()) }
+    if (now - this.stocksAt > 60_000) { this.stocksAt = now; jobs.push(this.refreshStocks(now).catch((e) => this.errors.push(`stocks: ${e?.message ?? e}`))) }
     await Promise.all(jobs)
   }
 
   get(ccy: string, now = Date.now()): Fair {
-    return combine(ccy, [...(this.quotes.get(ccy)?.values() ?? [])], now, { agreePct: this.agreePct, allowSingle: this.allowSingle })
+    // Stocks: Robinhood's own token price is the issuer's (what its market makers mint and redeem at), so it may
+    // stand alone for stocks Hyperliquid doesn't list (STOCK_SINGLE_SOURCE=0 to require both).
+    const stock = ccy.startsWith('STOCK:')
+    return combine(ccy, [...(this.quotes.get(ccy)?.values() ?? [])], now, { agreePct: stock ? this.stockAgreePct : this.agreePct, allowSingle: stock ? process.env.STOCK_SINGLE_SOURCE !== '0' : this.allowSingle })
   }
 }

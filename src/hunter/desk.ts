@@ -5,13 +5,13 @@
 // Every candidate trade passes, in order: a quoted profit after gas and fees (round trip, measured in dollars),
 // an exit-pool size limit, a fair price from two agreeing sources, the depeg / stuck-pool / suspicious-price
 // guards, and the minimum gap. Then a pre-send simulation of each transaction.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import {
   concat, encodeFunctionData, encodePacked, erc20Abi, formatUnits, parseAbi, parseAbiItem, parseUnits, zeroAddress,
   type Address, type Hex,
 } from 'viem'
 import { toDataSuffix } from '@celo/attribution-tags'
-import { buildRoutes, routeKey, routeName, scanRoutes, shouldSell, tradingAllowed, usdOf, type Opp, type Route, type Venue } from '../engine.js'
+import { buildRoutes, prefilterRoutes, routeKey, routeName, scanRoutes, shouldSell, tradingAllowed, usdOf, type Opp, type Route, type Venue } from '../engine.js'
 import { PendingStore } from '../pending.js'
 import { notify } from '../notify.js'
 import { PoolWatcher } from '../watch.js'
@@ -23,6 +23,7 @@ import { mentoVenue } from './mento.js'
 import { bestOf, hopVenue } from './hop.js'
 import { solidlyVenue } from './solidly.js'
 import { curveVenue } from './curve.js'
+import { v4Venue, V4_TIERS } from './v4.js'
 import { limiter } from './limit.js'
 import { inflight } from './inflight.js'
 import { aaveInfo, aaveWithdraw, parkedUnits } from './savings.js'
@@ -54,6 +55,7 @@ const MAX_EXIT_IMPACT_BPS = n('MAX_EXIT_IMPACT_BPS', '100')
 const ALERT_TRADE_USD = n('ALERT_TRADE_USD', '1')
 const NEWPOOL_MS = n('NEWPOOL_SEC', '60') * 1000
 const OBSERVE_MS = n('OBSERVE_SEC', '300') * 1000
+const PREFILTER_FROM = n('PREFILTER_FROM', '60') // chains with more routes than this are prefiltered
 const MAX_FLATTEN_LOSS_BPS = 50, MAX_HOLD_MS = 30 * 60_000, COOLDOWN_MS = 5 * 60_000, SLIPPAGE_BPS = 30n
 const MODE = process.argv.includes('--scan') ? 'scan' : process.argv.includes('--watch') ? 'watch' : (process.env.MODE ?? 'both')
 
@@ -68,8 +70,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const errMsg = (e: any) => String(e?.shortMessage ?? e?.message ?? e).split('\n')[0]
 const pct = (d: number | null) => (d === null ? '?' : `${d >= 0 ? '+' : ''}${(d * 100).toFixed(2)}%`)
 
-type DexVenue = Venue & { pools: Map<string, number[]>; addrs: Map<string, string[]>; discover(tokens: string[]): Promise<number> }
-type Lane = { kind: 'all' } | { kind: 'fee'; fee: number } | { kind: 'hub'; hub: string }
+type DexVenue = Venue & { pools: Map<string, number[]>; addrs: Map<string, string[]>; discover(tokens: string[]): Promise<number>; hubTier?: Map<string, number> }
+// A lane is one way through an exchange: one direct pool (fee), or through a hub with the coin's side pinned to one
+// pool (hubfee). The cash <-> hub step always uses that pair's deepest pool (picked at discovery).
+type Lane = { kind: 'all' } | { kind: 'fee'; fee: number } | { kind: 'hubfee'; hub: string; fee: number }
 
 export async function runChain(p: ChainProfile, ctx: Ctx) {
   const tag = `[${p.key}]`
@@ -83,7 +87,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   const log = (file: string, o: object) => appendFileSync(`${dir}/${file}`, JSON.stringify({ ts: new Date().toISOString(), chain: p.key, ...o }) + '\n')
   const TAG = (p.key === 'celo' && ATTRIBUTION_TAG ? toDataSuffix(ATTRIBUTION_TAG) : '0x') as Hex
   const T = p.tokens
-  const rpc = limiter(Number(process.env.RPC_CONCURRENCY ?? '8')) // quotes in flight at once on this chain
+  const rpc = limiter(Number(process.env[`${p.key.toUpperCase()}_RPC_CONCURRENCY`] ?? process.env.RPC_CONCURRENCY ?? p.rpcConcurrency ?? 8)) // quotes in flight at once on this chain
   const st = () => ctx.store.state.chains[p.key]
   // The engine counts the cash token in 6 decimals ($1 = 1e6); cash tokens with other decimals are scaled here.
   const shift = () => T.USDT.decimals - 6
@@ -136,16 +140,25 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   // hub token. Pools of the same exchange drift apart (thin local-currency pools most of all), so buying in one
   // lane and selling in another is a trade even when only one exchange lists the currency.
   const pairKey = (a: string, b: string) => [a, b].sort().join(':')
-  function venueFor(d: Dex, pools = new Map<string, number[]>(), lane: Lane = { kind: 'all' }): DexVenue {
+  function venueFor(d: Dex, pools = new Map<string, number[]>(), lane: Lane = { kind: 'all' }, hubTier = new Map<string, number>()): DexVenue {
+    // Fee tiers to try for one leg: the cash <-> hub leg uses its deepest pool only; in a hubfee lane the coin's
+    // leg uses the lane's pool only.
+    const legFees = (a: string, b: string): number[] => {
+      const fs = pools.get(pairKey(a, b)) ?? []
+      const hub = a === 'USDT' ? b : b === 'USDT' ? a : null
+      if (hub && p.hubs.includes(hub)) { const t = hubTier.get(hub); return t !== undefined && fs.includes(t) ? [t] : fs }
+      if (lane.kind === 'hubfee' && (a === lane.hub || b === lane.hub)) return fs.filter((f) => f === lane.fee)
+      return fs
+    }
     function paths(tin: string, tout: string): Hex[] {
       const out: Hex[] = []
-      if (lane.kind !== 'hub') for (const f of pools.get(pairKey(tin, tout)) ?? []) {
+      if (lane.kind !== 'hubfee') for (const f of pools.get(pairKey(tin, tout)) ?? []) {
         if (lane.kind === 'fee' && f !== lane.fee) continue
         out.push(encodePacked(['address', 'uint24', 'address'], [T[tin].address, f, T[tout].address]))
       }
       if (lane.kind !== 'fee') for (const h of p.hubs) {
-        if (!T[h] || h === tin || h === tout || (lane.kind === 'hub' && h !== lane.hub)) continue
-        for (const f1 of pools.get(pairKey(tin, h)) ?? []) for (const f2 of pools.get(pairKey(h, tout)) ?? [])
+        if (!T[h] || h === tin || h === tout || (lane.kind === 'hubfee' && h !== lane.hub)) continue
+        for (const f1 of legFees(tin, h)) for (const f2 of legFees(h, tout))
           out.push(encodePacked(['address', 'uint24', 'address', 'uint24', 'address'], [T[tin].address, f1, T[h].address, f2, T[tout].address]))
       }
       return out
@@ -165,14 +178,18 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const memo = new Map<string, { at: number; p: Promise<bigint | null> }>()
     const addrs = new Map<string, string[]>() // pool address -> its two tokens (for the watcher)
     return {
-      name: lane.kind === 'all' ? d.name : lane.kind === 'fee' ? (d.kind === 'slipstream' ? `${d.name}/ts${lane.fee}` : `${d.name}/${lane.fee / 10_000}%`) : `${d.name}/via-${lane.hub}`,
-      gas: lane.kind === 'hub' ? d.gas + 60_000 : d.gas,
+      name: lane.kind === 'all' ? d.name : (d.kind === 'slipstream' ? `${d.name}/ts${lane.fee}` : `${d.name}/${lane.fee / 10_000}%`) + (lane.kind === 'hubfee' ? `-via-${lane.hub}` : ''),
+      gas: lane.kind === 'hubfee' ? d.gas + 60_000 : d.gas,
       pools,
+      hubTier,
       addrs,
       async discover(tokens) {
-        const all = [...new Set(['USDT', ...p.hubs, ...tokens])].filter((t) => T[t])
+        // Only pairs with the cash token or a hub: those are the only pools a route can use (and with 200+ stock
+        // tokens, every pair would be 80,000 lookups).
+        const bases = ['USDT', ...p.hubs].filter((t) => T[t])
+        const all = [...new Set([...bases, ...tokens])].filter((t) => T[t])
         const pairs: [string, string][] = []
-        for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) pairs.push([all[i], all[j]])
+        for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) if (bases.includes(all[i]) || bases.includes(all[j])) pairs.push([all[i], all[j]])
         const res = await pub.multicall({
           allowFailure: true,
           contracts: pairs.flatMap(([a, b]) => d.fees.map((fee) => ({ address: d.factory, abi: (d.kind === 'slipstream' ? slipFactoryAbi : factoryAbi) as typeof factoryAbi, functionName: 'getPool', args: [T[a].address, T[b].address, fee] } as const))),
@@ -184,6 +201,19 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
           addrs.set(String(r.result).toLowerCase(), [a, b])
           pools.set(pairKey(a, b), [...(pools.get(pairKey(a, b)) ?? []), d.fees[i % d.fees.length]])
         })
+        // The deepest cash <-> hub pool: the one that gives the most for $100.
+        hubTier.clear()
+        await Promise.all(p.hubs.filter((h) => T[h]).map(async (h) => {
+          let bestFee: number | undefined, bestOut = 0n
+          for (const f of pools.get(pairKey('USDT', h)) ?? []) {
+            try {
+              const path = encodePacked(['address', 'uint24', 'address'], [T.USDT.address, f, T[h].address])
+              const { result } = await rpc(() => pub.simulateContract({ address: d.quoter, abi: quoterAbi, functionName: 'quoteExactInput', args: [path, toRaw('USDT', 100_000_000n)] }))
+              if (result[0] > bestOut) { bestOut = result[0]; bestFee = f }
+            } catch { /* empty pool */ }
+          }
+          if (bestFee !== undefined) hubTier.set(h, bestFee)
+        }))
         return pools.size
       },
       quote(tin, tout, amt) {
@@ -236,6 +266,21 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     added.push(k)
   })
   if (skipped.length) say(`not found on ${p.key} (skipped): ${skipped.join(' ')}`)
+  // Robinhood: the official stock tokens, from Robinhood's own list (cached, in case the API is down at startup).
+  const multipliers = new Map<string, number>()
+  if (p.stocks) {
+    const cacheFile = `${dir}/assets.json`
+    let assets: any[] = await fetch(`${p.stocks.api}/assets`, { signal: AbortSignal.timeout(30_000) }).then((r) => r.json()).then((j: any) => j.assets ?? []).catch(() => [])
+    if (assets.length) writeFileSync(cacheFile, JSON.stringify(assets))
+    else if (existsSync(cacheFile)) { assets = JSON.parse(readFileSync(cacheFile, 'utf8')); say('Robinhood asset list unreachable; using the saved copy') }
+    for (const a of assets) {
+      const d = (a.deployments ?? []).find((x: any) => x.chainId === p.chain.id)
+      if (!d || a.status !== 'ASSET_STATUS_ACTIVE' || T[a.tokenSymbol]) continue
+      T[a.tokenSymbol] = { address: d.contractAddress, decimals: Number(a.tokenDecimals ?? 18), ccy: `STOCK:${a.tokenSymbol}` }
+      multipliers.set(a.tokenSymbol, Number(a.currentMultiplier ?? '1') || 1)
+    }
+    say(`${multipliers.size} official stock tokens from Robinhood's asset list`)
+  }
 
   const venues: DexVenue[] = []
   const lanesOf = new Map<DexVenue, { lane: Lane; venue: DexVenue }[]>()
@@ -244,8 +289,8 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     if (codes.every((c) => c && c !== '0x')) {
       const v = venueFor(d)
       venues.push(v)
-      const lanes: Lane[] = [...d.fees.map((fee) => ({ kind: 'fee', fee }) as Lane), ...p.hubs.filter((h) => T[h]).map((hub) => ({ kind: 'hub', hub }) as Lane)]
-      lanesOf.set(v, lanes.map((lane) => ({ lane, venue: venueFor(d, v.pools, lane) })))
+      const lanes: Lane[] = [...d.fees.map((fee) => ({ kind: 'fee', fee }) as Lane), ...p.hubs.filter((h) => T[h]).flatMap((hub) => d.fees.map((fee) => ({ kind: 'hubfee', hub, fee }) as Lane))]
+      lanesOf.set(v, lanes.map((lane) => ({ lane, venue: venueFor(d, v.pools, lane, v.hubTier) })))
     } else say(`skipping ${d.name}: contracts not found on ${p.key} (check src/hunter/chains.ts)`)
   }
   const dexFactories = [...p.dexes, ...envDexes(p.key)].map((d) => d.factory)
@@ -271,6 +316,15 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const receivedByHash = async (t: string, before: bigint, hash: Hex) => received(t, before, (await pub.getTransactionReceipt({ hash })).blockNumber)
     for (const h of p.hubs.filter((h) => T[h]?.ccy))
       venues.push(hopVenue(cv, h, bestOf(`best-${h}`, others), { name: `curve/via-${h}`, balanceOf: (t) => balanceOf(t), received: receivedByHash, slippageBps: SLIPPAGE_BPS }))
+  }
+  if (p.v4) {
+    const v4 = p.v4
+    const codes = await Promise.all([v4.poolManager, v4.quoter, v4.permit2, ...v4.routers].map((a) => pub.getCode({ address: a }).catch(() => undefined)))
+    const has = (i: number) => !!codes[i] && codes[i] !== '0x'
+    const router = v4.routers.find((_, i) => has(3 + i))
+    if (has(0) && has(1) && has(2) && router)
+      for (const tier of V4_TIERS) venues.push(v4Venue({ v4, router, tier, bases: ['USDT', ...p.hubs], pub, T, me: account.address, rpc, toRaw, fromRaw, send, ensureAllowance }))
+    else say('skipping uniswap-v4: contracts not found')
   }
   if (p.textile) venues.push(textileVenue({ ...p.textile, rpc, chainId: p.chain.id, account, T, toRaw, fromRaw, send, ensureAllowance, balanceOf: (t) => balanceOf(t) }))
   if (!venues.length) { status.error = `no exchanges found on ${p.key}`; say(status.error); return }
@@ -307,7 +361,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
         const set = new Set<string>()
         for (const X of corridors()) {
           if (lane.kind === 'fee' && v.pools.get(pairKey('USDT', X))?.includes(lane.fee)) set.add(X)
-          if (lane.kind === 'hub' && lane.hub !== X && v.pools.get(pairKey('USDT', lane.hub))?.length && v.pools.get(pairKey(lane.hub, X))?.length) set.add(X)
+          if (lane.kind === 'hubfee' && lane.hub !== X && v.pools.get(pairKey('USDT', lane.hub))?.length && v.pools.get(pairKey(lane.hub, X))?.includes(lane.fee)) set.add(X)
         }
         laneSupport.set(venue.name, set)
       }
@@ -319,6 +373,8 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const traded = new Set(routes.map((r) => r.X))
     status.routes = routes.length
     status.tokens = [...traded]
+    const stockList = [...traded].filter((X) => multipliers.has(X)).map((X) => ({ symbol: X, multiplier: multipliers.get(X)! }))
+    if (stockList.length) { ctx.fair.watchStocks(stockList); await ctx.fair.refresh() }
     say(`discovery: ${venues.map((v, i) => `${v.name} ${counts[i]} pools`).join(', ')}; ${routes.length} routes (${inside} pool-to-pool)`)
     say(`  coins with a route: ${[...traded].map((X) => `${X}(${ccyOf(X)})`).join(' ') || 'none'}`)
   }
@@ -518,7 +574,9 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     if (tradeLive && maxSize < minSize) { status.lastLine = `not enough ${p.cashName} to trade (have $${cashUsd.toFixed(2)})`; if (!focus) say(`  ${status.lastLine}`); return }
     const gas = new Map<string, number>()
     for (const r of live) gas.set(routeKey(r), await gasUsd(r.buy.gas + r.sell.gas))
-    const opps = await scanRoutes(live, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0, MAX_EXIT_IMPACT_BPS)
+    // Many routes (Robinhood has 1,000+): estimate them all from one buy and one sell quote per pool and coin first.
+    const candidates = live.length > PREFILTER_FROM ? await prefilterRoutes(live, minSize) : live
+    const opps = await scanRoutes(candidates, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0, MAX_EXIT_IMPACT_BPS)
     status.lastScanAt = Date.now()
     // Check the best candidates against the peg guards; the first that passes is the trade.
     let chosen: { o: Opp; buyDev: number | null; sellDev: number | null } | null = null
@@ -532,7 +590,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     if (!focus) for (const b of blocked.slice(0, 2)) say(`  skip ${b}`)
     if (opps[0]) appendFileSync(`${dir}/scans.jsonl`, JSON.stringify({ ts: new Date().toISOString(), route: routeName(opps[0].route), sizeUsd: usd(opps[0].size), net: opps[0].net, would: !!chosen, mode: s.mode }) + '\n')
     if (!chosen) {
-      status.lastLine = `no trade (${live.length} routes)  ${p.cashName} $${cashUsd.toFixed(2)}  today ${ctx.ledger.today(p.key) >= 0 ? '+' : ''}${ctx.ledger.today(p.key).toFixed(4)}  [${s.mode}]`
+      status.lastLine = `no trade (${live.length} routes, ${candidates.length} looked close)  ${p.cashName} $${cashUsd.toFixed(2)}  today ${ctx.ledger.today(p.key) >= 0 ? '+' : ''}${ctx.ledger.today(p.key).toFixed(4)}  [${s.mode}]`
       if (!focus) say(`  ${status.lastLine}`)
       return
     }
