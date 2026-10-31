@@ -519,6 +519,15 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const [buyDev, sellDev] = f.usdPer
       ? await Promise.all([venueDev(o.route.buy, X, f.usdPer), venueDev(o.route.sell, X, f.usdPer)])
       : [null, null]
+    // Sanity: buying and selling straight back on one exchange must not return more than went in (a real pool always
+    // loses its fee on a round trip). One that "gains" is quoting wrongly, and any route through it is suspect.
+    const roundTrip = async (v: Venue) => {
+      const x = await v.quote('USDT', X, o.size)
+      const back = x ? await v.quote(X, 'USDT', x) : null
+      return back !== null && back * 10_000n > o.size * 10_005n ? `${v.name} quotes a free round trip (${usd(o.size).toFixed(2)} -> ${usd(back).toFixed(2)}): broken quote` : null
+    }
+    const broken = (await roundTrip(o.route.buy)) ?? (await roundTrip(o.route.sell))
+    if (broken) return { why: broken, buyDev, sellDev }
     const why = blockReason({
       fairOk: f.usdPer !== null, fairNote: f.note,
       frozen: ctx.board.frozen(p.key, X, ccyOf(X)),
