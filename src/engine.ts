@@ -81,7 +81,15 @@ export async function bestSize(route: Route, minSize: bigint, maxSize: bigint, g
 // coin for a buy price and once for a sell price (on a common token amount), every route's edge is estimated from
 // those, and only routes that come out (nearly) positive get exact quotes. At these tiny sizes prices are close to
 // linear, and a small allowance (0.1% of the trade) keeps borderline routes in.
-export async function prefilterRoutes(routes: Route[], probe: bigint): Promise<Route[]> {
+// Several probe sizes: some venues (RFQ desks like Textile) price big trades better than small ones, so a route can
+// lose at $50 and pay at $200. A route is kept if it comes close at any of them.
+export async function prefilterRoutes(routes: Route[], probes: bigint | bigint[]): Promise<Route[]> {
+  const sizes = [...new Set(Array.isArray(probes) ? probes : [probes])]
+  const kept = new Set<Route>()
+  for (const probe of sizes) for (const r of await prefilterAt(routes, probe)) kept.add(r)
+  return routes.filter((r) => kept.has(r))
+}
+async function prefilterAt(routes: Route[], probe: bigint): Promise<Route[]> {
   const coins = [...new Set(routes.map((r) => r.X))]
   const keep: Route[] = []
   await Promise.all(coins.map(async (X) => {
@@ -106,12 +114,27 @@ export async function prefilterRoutes(routes: Route[], probe: bigint): Promise<R
 // maxExitImpactBps: sizes that move the exit pool's price more than this are not considered (see exitImpactBps).
 // probeSize: the size each route is first tested at (default minSize). A realistic size ($10) avoids rounding and
 // fixed-fee effects that make tiny test trades look worse than real ones.
-export async function scanRoutes(routes: Route[], minSize: bigint, maxSize: bigint, gasUsdFor: (r: Route) => number, maxExitImpactBps = Infinity, probeSize?: bigint): Promise<Opp[]> {
-  const testAt = probeSize && probeSize > minSize ? (probeSize < maxSize ? probeSize : maxSize) : minSize
+// Sizes each route is first tested at: the largest trade, half and a quarter (as Kiyoshi does), never under minSize.
+// Bigger is not always worse: an RFQ desk can price $200 better than $50, so a route is tested at all of them and
+// the size search then refines around whichever pays most.
+export const probeSizes = (minSize: bigint, maxSize: bigint): bigint[] =>
+  [...new Set([maxSize, maxSize / 2n, maxSize / 4n].map((s) => (s < minSize ? minSize : s)))].filter((s) => s <= maxSize)
+
+export async function scanRoutes(routes: Route[], minSize: bigint, maxSize: bigint, gasUsdFor: (r: Route) => number, maxExitImpactBps = Infinity): Promise<Opp[]> {
+  const sizes = probeSizes(minSize, maxSize)
   const found = await Promise.all(routes.map(async (r) => {
-    const probe = await evaluate(r, testAt, gasUsdFor(r)).catch(() => null)
-    if (!probe || probe.edge <= 0) return probe
-    return bestSize(r, minSize, maxSize, gasUsdFor(r), maxExitImpactBps, probe).catch(() => probe)
+    const all = (await Promise.all(sizes.map((s) => evaluate(r, s, gasUsdFor(r)).catch(() => null)))).filter(Boolean) as Opp[]
+    if (!all.length) return null
+    const first = [...all].sort((a, b) => b.net - a.net)[0]
+    if (!all.some((o) => o.edge > 0)) return first // loses at every size: done, no more quotes
+    // The smallest allowed trade is the baseline for the exit-pool limit; sizes that move the exit pool more are dropped.
+    const base = all.find((o) => o.size === minSize) ?? (await evaluate(r, minSize, gasUsdFor(r)).catch(() => null)) ?? all.reduce((a, b) => (b.size < a.size ? b : a))
+    const tries = all.filter((o) => exitImpactBps(o, base) <= maxExitImpactBps).sort((a, b) => b.net - a.net)
+    const top = tries[0] ?? base
+    if (top.edge <= 0) return top
+    // Refine around the best size.
+    const refined = await bestSize(r, minSize, maxSize, gasUsdFor(r), maxExitImpactBps, base).catch(() => null)
+    return refined && refined.net > top.net ? refined : top
   }))
   return (found.filter(Boolean) as Opp[]).sort((a, b) => b.net - a.net)
 }

@@ -105,13 +105,13 @@ test('pending inventory survives a restart and merges lots', () => {
   assert.equal(new PendingStore(file).get('cNGN'), undefined)
 })
 
-test('scanRoutes quotes a losing route once instead of running the size search', async () => {
+test('scanRoutes quotes a losing route only at its probe sizes (full, half, quarter), no size search', async () => {
   let calls = 0
   const counted = (v: Venue): Venue => ({ ...v, quote: (a, b, c) => { calls++; return v.quote(a, b, c) } })
   const losing = { X: 'wBRL' as TokenKey, buy: counted(rfq('a', 4.9)), sell: rfq('b', 5) }
   const [o] = await scanRoutes([losing], $(2), $(70), () => 0)
   assert.ok(o.edge < 0)
-  assert.equal(calls, 1)
+  assert.equal(calls, 3)
 })
 
 test('exit impact: sizes that push the exit pool more than the limit are not chosen', async () => {
@@ -134,4 +134,15 @@ test('prefilter keeps the profitable route and drops clearly losing ones', async
   const names = kept.map((r) => `${r.buy.name}>${r.sell.name}`)
   assert.ok(names.includes('cheap>fair1') && names.includes('cheap>fair2'))
   assert.ok(!names.includes('fair1>cheap') && !names.includes('fair2>cheap'))
+})
+
+test('a route that only pays at the big size is found (Textile prices big trades better)', async () => {
+  const { scanRoutes } = await import('../src/engine.js')
+  // Sell venue pays 0.1% more on trades of $150+ (like an RFQ desk's better price for size); buy pool is deep.
+  const tiered: Venue = { name: 'tiered', gas: 0, swap: fail, async quote(tin, _t, amt) {
+    const x = Number(amt) / 1e6
+    return tin === 'USDT' ? $(x) : $(x * (x >= 150 ? 1.0012 : 0.9995))
+  } }
+  const [o] = await scanRoutes([{ X: 'X', buy: amm('deep', 1, 10_000_000, 1), sell: tiered }], $(50), $(196), () => 0)
+  assert.ok(o.edge > 0 && o.size >= $(150))
 })

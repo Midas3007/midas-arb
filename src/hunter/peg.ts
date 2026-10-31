@@ -17,10 +17,10 @@ export const RULES: PegRules = {
   depegPct: Number(process.env.DEPEG_PCT ?? '3'),
   suspiciousPct: Number(process.env.SUSPICIOUS_PCT ?? '20'),
   stuckHours: Number(process.env.STUCK_HOURS ?? '24'),
-  // Kiyoshi's rule, which made money on these very pools: at least $0.02 after gas, whatever the percentage (its
+  // Close to Kiyoshi's rule ($0.01 before gas), but counting gas: at least $0.01 after gas, whatever the percentage (its
   // real gaps are often 0.03-0.3% of a $70 trade). MIN_GAP_PCT adds a percentage floor if wanted (off by default).
   minGapPct: Number(process.env.MIN_GAP_PCT ?? '0'),
-  minNetUsd: Number(process.env.MIN_NET_USD ?? '0.02'),
+  minNetUsd: Number(process.env.MIN_NET_USD ?? '0.01'),
   // Currencies whose free feeds give the official rate while crypto trades nearer the street rate: cNGN sits
   // ~2% and wARS ~7% from the official rate on every chain and at Textile. Wider depeg limits for them.
   depegByCcy: Object.fromEntries((process.env.DEPEG_PCT_CCY ?? 'NGN:5,ARS:12').split(',').filter(Boolean).map((x) => { const [c, v] = x.split(':'); return [c.trim().toUpperCase(), Number(v)] })),

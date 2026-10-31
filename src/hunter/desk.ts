@@ -11,7 +11,7 @@ import {
   type Address, type Hex,
 } from 'viem'
 import { toDataSuffix } from '@celo/attribution-tags'
-import { buildRoutes, prefilterRoutes, routeKey, routeName, scanRoutes, shouldSell, tradingAllowed, usdOf, type Opp, type Route, type Venue } from '../engine.js'
+import { buildRoutes, prefilterRoutes, probeSizes, routeKey, routeName, scanRoutes, shouldSell, tradingAllowed, usdOf, type Opp, type Route, type Venue } from '../engine.js'
 import { PendingStore } from '../pending.js'
 import { notify } from '../notify.js'
 import { PoolWatcher } from '../watch.js'
@@ -59,6 +59,8 @@ const MAX_EXIT_IMPACT_BPS = n('MAX_EXIT_IMPACT_BPS', '100')
 const ALERT_TRADE_USD = n('ALERT_TRADE_USD', '1')
 const NEWPOOL_MS = n('NEWPOOL_SEC', '60') * 1000
 const OBSERVE_MS = n('OBSERVE_SEC', '300') * 1000
+const CHASE_MS = n('CHASE_SEC', '5') * 1000 // chase mode: re-check a coin with a live gap this often...
+const CHASE_MAX_MS = n('CHASE_MAX_MIN', '10') * 60_000 // ...for at most this long
 const PREFILTER_FROM = n('PREFILTER_FROM', '60') // chains with more routes than this are prefiltered
 const MAX_FLATTEN_LOSS_BPS = 50, MAX_HOLD_MS = 30 * 60_000, COOLDOWN_MS = 5 * 60_000, SLIPPAGE_BPS = 30n
 const MODE = process.argv.includes('--scan') ? 'scan' : process.argv.includes('--watch') ? 'watch' : (process.env.MODE ?? 'both')
@@ -568,6 +570,9 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   }
 
   // ---------- one scan ----------
+  // Chase mode (Kiyoshi's): after a gap is found, that coin is re-checked every CHASE_SEC (5 s) and traded again
+  // until the gap closes (live), instead of waiting for the next full scan.
+  let chaseX: string | null = null, chaseSince = 0
   async function cycle(focus: Set<string> | null = null) {
     const s = st()
     const tradeLive = ctx.live && s.mode === 'live' && !ctx.store.state.paused && process.env.HUNTER_PAUSED !== '1'
@@ -593,13 +598,12 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const maxSize = parseUnits(sizeUsd.toFixed(6), 6)
     const minUsd = Math.max(FLOOR_USD, Math.min(MIN_TRADE_USD, sizeUsd))
     const minSize = BigInt(Math.round(minUsd * 1e6))
-    const testSize = probeUsd < maxSize ? (probeUsd > minSize ? probeUsd : minSize) : maxSize
     if (tradeLive && maxSize < minSize) { status.lastLine = `not enough ${p.cashName} to trade (have $${cashUsd.toFixed(2)})`; if (!focus) say(`  ${status.lastLine}`); return }
     const gas = new Map<string, number>()
     for (const r of live) gas.set(routeKey(r), await gasUsd(r.buy.gas + r.sell.gas))
     // Many routes (Robinhood has 1,000+): estimate them all from one buy and one sell quote per pool and coin first.
-    const candidates = live.length > PREFILTER_FROM ? await prefilterRoutes(live, testSize) : live
-    const opps = await scanRoutes(candidates, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0, MAX_EXIT_IMPACT_BPS, testSize)
+    const candidates = live.length > PREFILTER_FROM ? await prefilterRoutes(live, probeSizes(minSize, maxSize)) : live
+    const opps = await scanRoutes(candidates, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0, MAX_EXIT_IMPACT_BPS)
     status.lastScanAt = Date.now()
     // Check the best candidates against the peg guards; the first that passes is the trade.
     let chosen: { o: Opp; buyDev: number | null; sellDev: number | null } | null = null
@@ -621,6 +625,8 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const line = `${routeName(o.route)} $${usd(o.size).toFixed(2)}, expected +$${o.net.toFixed(4)} (${((o.net / usd(o.size)) * 100).toFixed(2)}%; buy pool ${pct(buyDev)}, sell pool ${pct(sellDev)} vs fair)`
     status.lastLine = `${tradeLive ? 'TRADING' : 'would trade'}: ${line}`
     say(`  >> ${status.lastLine}`)
+    if (!chaseX) chaseSince = Date.now()
+    chaseX = o.route.X
     if (!tradeLive) { recordWatch(o, buyDev, sellDev); return }
     if (!status.gasOk) { say(`  not trading: a swap costs $${status.swapGasUsd.toFixed(4)} right now (MAX_SWAP_GAS_USD $${MAX_SWAP_GAS_USD})`); return }
     if (!tradingAllowed(ctx.ledger.today(p.key), MAX_DAILY_LOSS_USD)) { say(`  paused for today: ${p.key} lost $${MAX_DAILY_LOSS_USD}`); return }
@@ -643,6 +649,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       } catch (e) { say(`  could not take cash out of Aave (${errMsg(e)}); skipping this trade`); return }
     }
     const net = await inflight.run(() => execute(o)) // the whole scan already holds this chain's lock
+    if (net === null || net <= 0) chaseX = null // only chase what actually paid
     say(`  result: ${net === null ? 'incomplete (leftover managed by the loss guard)' : `${net >= 0 ? '+' : ''}${net.toFixed(4)} after gas`}`)
     if (net !== null && usd(o.size) >= ALERT_TRADE_USD) notify(`${p.key}: ${routeName(o.route)} $${usd(o.size).toFixed(2)} -> ${net >= 0 ? '+' : ''}$${net.toFixed(4)} after gas`)
   }
@@ -655,8 +662,16 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   let focus: Set<string> | null = null, lastFull = 0
   while (!ctx.stopping()) {
     if (!focus) lastFull = Date.now()
+    const chasing = chaseX
+    if (chasing) chaseX = null // set again by the cycle if the gap is still there
     try { await ctx.locks.run(p.key, () => cycle(focus)); status.error = undefined } catch (e) { status.error = errMsg(e); say(`cycle error: ${status.error}`) }
     if (ctx.stopping()) break
+    if (chasing && !chaseX) say(`  gap on ${chasing} closed after ${Math.round((Date.now() - chaseSince) / 1000)}s; back to full scans`)
+    if (chaseX && Date.now() - chaseSince < CHASE_MAX_MS) {
+      if (!chasing) say(`  chasing ${chaseX}: re-checking every ${CHASE_MS / 1000}s while the gap lasts`)
+      await sleep(CHASE_MS); focus = new Set([chaseX]); continue
+    }
+    chaseX = null
     const left = Math.max(0, lastFull + fullEvery - Date.now())
     if (MODE === 'scan') { focus = null; await sleep(left); continue }
     focus = await watcher.wait(left, ctx.stopping)
