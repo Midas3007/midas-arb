@@ -21,3 +21,11 @@ test('rewards: claimed only once they are worth the minimum together', () => {
   assert.equal(worthClaiming([{ usd: 0.6 }, { usd: 0.5 }], 1), true)
   assert.equal(worthClaiming([], 1), false)
 })
+
+test('Textile haircut: default until 5 fills, then the 80th percentile of how far firm quotes fell short', async () => {
+  const { haircutBps } = await import('../src/hunter/textile.js')
+  assert.equal(haircutBps([], 5), 5)
+  assert.equal(haircutBps([1, 2, 3, 4], 5), 5)
+  assert.equal(haircutBps([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 5), 9)
+  assert.equal(haircutBps([-3, -2, -1, -1, -2], 5), 0) // firm quotes better than previews: no haircut
+})

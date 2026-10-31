@@ -10,6 +10,7 @@
 // too: an exchange whose contracts are missing is dropped with a message.
 import { defineChain, type Address, type Chain } from 'viem'
 import type { V4Config } from './v4.js'
+import type { LfjConfig } from './lfj.js'
 import { arbitrum, avalanche, base, bsc, celo, gnosis, optimism, polygon, sei } from 'viem/chains'
 
 export type Dex = {
@@ -44,6 +45,7 @@ export type ChainProfile = {
   aave?: Address // Aave v3 Pool: idle cash earns interest here between trades
   stocks?: { api: string; max: number } // Robinhood: official stock tokens and their prices from Robinhood's API; the `max` deepest are watched
   v4?: V4Config // Uniswap v4: standard (hookless) pools, one venue per fee tier
+  lfj?: LfjConfig // LFJ (Trader Joe) Liquidity Book on Avalanche
   mento?: { broker: Address; hub: string } // Celo: Mento, oracle-priced exchange; trades `hub` (USDm) for each currency
   textile?: { api: string; reactor: Address } // Celo: Textile FX, RFQ market makers quoting at real FX rates
   dexes: Dex[]
@@ -112,6 +114,7 @@ export const CHAINS: Record<string, ChainProfile> = {
     // docs.textilecredit.com/protocol/address-book (Celo 42220)
     textile: { api: process.env.TEXTILE_API ?? 'https://api.textilecredit.com', reactor: '0xa9AA0a64769cBed4d3B1Ceb4Df01CdE915C235b3' },
     curve: 'celo', aave: '0x3E59A31363E2ad014dcbc521c4a0d5757d9f3402',
+    v4: { poolManager: '0x288dc841A52FCA2707c6947B3A777c5E56cd87BC', quoter: '0x28566da1093609182dff2cb2a91cfd72e61d66cd', routers: ['0xe2023F3FA515cF070e07fD9d51c1d236e07843f4', '0x8b844f885672f333bc0042cb669255f93a4c1e6b'], permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3' }, // docs.uniswap.org v4 deployments
     dexes: [uniV3('0xAfE208a311B21f13EF87E33A90049fC17A7acDEc', '0x82825d0554fA07f7FC52Ab63c961F330fdEFa8E8', '0x5615CDAb10dc425a742d643d949a7F474C01abc4', 200_000)],
   },
   base: {
@@ -149,6 +152,7 @@ export const CHAINS: Record<string, ChainProfile> = {
     solidly: [{ name: 'aerodrome-v2', router: '0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43', factory: '0x420DD381b31aEf6683db6B902084cB0FFECe40Da' }],
     // Textile's reactor on base (docs.textilecredit.com/protocol/address-book)
     textile: { api: process.env.TEXTILE_API ?? 'https://api.textilecredit.com', reactor: '0xEb5A29F869FF084B3Fce18d3487a38A56feDC59E' },
+    v4: { poolManager: '0x498581ff718922c3f8e6a244956af099b2652b2b', quoter: '0xE1A6C5803e3c44368b171BD680c7D32dfc92CA47', routers: ['0xd6145b2D3F379919E8CdEda7B97e37c4b2Ca9c40', '0xfdf682f51fe81aa4898f0ae2163d8a55c127fbc7'], permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3' }, // docs.uniswap.org v4 deployments
     dexes: [
       uniV3('0x33128a8fC17869897dcE68Ed026d694621f6FDfD', '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a', '0x2626664c2603336E57B271c5C0b26F421741e481'),
       slipstream('aerodrome', '0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A', '0x254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0', '0xBE6D8f0d05cC4be24d5167a3eF062215bE6D18a5'),
@@ -181,6 +185,7 @@ export const CHAINS: Record<string, ChainProfile> = {
     curve: 'bsc', aave: '0x6807dc923806fE8Fd134338EABCA509979a7e0cB',
     // Textile's reactor on bsc (docs.textilecredit.com/protocol/address-book)
     textile: { api: process.env.TEXTILE_API ?? 'https://api.textilecredit.com', reactor: '0xe03261c0436DB575F92F09EdDF3591E2566B7D97' },
+    v4: { poolManager: '0x28e2ea090877bf75740558f6bfb36a5ffee9e9df', quoter: '0x95C086d7fE28AdD842ee220fef225a777474d781', routers: ['0xDc264714F68d84CF29BC605589405E78bDBE7C9f', '0x8b844f885672f333bc0042cb669255f93a4c1e6b'], permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3' }, // docs.uniswap.org v4 deployments
     dexes: [
       { name: 'pancake', factory: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', quoter: '0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997',
         router: '0x13f4EA83D0bd40E75C8222255bc855a974568Dd4', routerStyle: '02', fees: [100, 500, 2500, 10000], gas: 180_000 },
@@ -220,6 +225,7 @@ export const CHAINS: Record<string, ChainProfile> = {
       ...envPegs('polygon'),
     },
     curve: 'polygon', aave: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
+    v4: { poolManager: '0x67366782805870060151383f4bbff9dab53e5cd6', quoter: '0x31AB0Dea31FC0ad5A54F03cD59C896eCD067447B', routers: ['0xDc264714F68d84CF29BC605589405E78bDBE7C9f', '0x8b844f885672f333bc0042cb669255f93a4c1e6b'], permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3' }, // docs.uniswap.org v4 deployments
     dexes: [
       uniV3('0x1F98431c8aD98523631AE4a59f267346ea31F984', '0x61fFE014bA17989E743c5F6cB21bF9697530B21e', '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45'),
       { name: 'sushi', factory: '0x917933899c6a5F8E37F31E19f92CdBFF7e8FF0e2', quoter: '0xb1E835Dc2785b52265711e17fCCb0fd018226a6e',
@@ -245,6 +251,7 @@ export const CHAINS: Record<string, ChainProfile> = {
       ...envPegs('arbitrum'),
     },
     curve: 'arbitrum', aave: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
+    v4: { poolManager: '0x360e68faccca8ca495c1b759fd9eee466db9fb32', quoter: '0x8928074CA1b241D8Ec02815881c1Af11E8bC5219', routers: ['0x2d01411773c8C24805306E89A41F7855C3c4Fe65', '0x8b844f885672f333bc0042cb669255f93a4c1e6b'], permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3' }, // docs.uniswap.org v4 deployments
     dexes: [
       uniV3('0x1F98431c8aD98523631AE4a59f267346ea31F984', '0x61fFE014bA17989E743c5F6cB21bF9697530B21e', '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45', 200_000),
       { name: 'pancake', factory: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', quoter: '0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997',
@@ -273,6 +280,7 @@ export const CHAINS: Record<string, ChainProfile> = {
     },
     curve: 'optimism', aave: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
     solidly: [{ name: 'velodrome-v2', router: '0xa062aE8A9c5e11aaA026fc2670B0D65cCc8B2858', factory: '0xF1046053aa5682b4F9a81b5481394DA16BE5FF5a' }],
+    v4: { poolManager: '0x9a13f98cb987694c9f086b1f5eb990eea8264ec3', quoter: '0xd673F731EDFe5AaF1bDa7FD43D13Bbb5150B87Ca', routers: ['0xC09255D86DB563cBc11C2fCf4a0C512e160111B4', '0x8b844f885672f333bc0042cb669255f93a4c1e6b'], permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3' }, // docs.uniswap.org v4 deployments
     dexes: [
       uniV3('0x1F98431c8aD98523631AE4a59f267346ea31F984', '0x61fFE014bA17989E743c5F6cB21bF9697530B21e', '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45'),
       slipstream('velodrome', '0xCc0bDDB707055e04e497aB22a59c2aF4391cd12F', '0x89D8218ed5fF1e46d8dcd33fb0bbeE3be1621466', '0x0792a633F0c19c351081CF4B211F68F79bCc9676'),
@@ -300,6 +308,8 @@ export const CHAINS: Record<string, ChainProfile> = {
       ...envPegs('avalanche'),
     },
     curve: 'avalanche', aave: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
+    v4: { poolManager: '0x06380c0e0912312b5150364b9dc4542ba0dbbc85', quoter: '0xf27e532878B622d6b916F524E8711880107D4eF0', routers: ['0x661E93cca42AfacB172121EF892830cA3b70F08d', '0x8b844f885672f333bc0042cb669255f93a4c1e6b'], permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3' }, // docs.uniswap.org v4 deployments
+    lfj: { quoter: '0x9A550a522BBaDFB69019b0432800Ed17855A51C3', router: '0x18556DA13313f3532c54711497A8FedAC273220E' }, // LFJ Liquidity Book v2.2
     dexes: [uniV3('0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD', '0xbe0F5544EC67e9B3b2D979aaA43f18Fd87E6257F', '0xbb00FF08d01D300023C629E8fFfFcb65A5a578cE')],
   },
   gnosis: {

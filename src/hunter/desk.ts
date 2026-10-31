@@ -20,6 +20,7 @@ import { ATTRIBUTION_TAG, DATA_DIR } from '../config.js'
 import { envDexes, type ChainProfile, type Dex } from './chains.js'
 import { clientsFor } from './clients.js'
 import { mentoVenue } from './mento.js'
+import { lfjVenue } from './lfj.js'
 import { bestOf, hopVenue } from './hop.js'
 import { solidlyVenue } from './solidly.js'
 import { curveVenue } from './curve.js'
@@ -347,7 +348,12 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       for (const tier of V4_TIERS) venues.push(v4Venue({ v4, router, tier, bases: ['USDT', ...p.hubs], pub, T, me: account.address, rpc, toRaw, fromRaw, send, ensureAllowance }))
     else say('skipping uniswap-v4: contracts not found')
   }
-  if (p.textile) venues.push(textileVenue({ ...p.textile, rpc, chainId: p.chain.id, account, T, toRaw, fromRaw, send, ensureAllowance, balanceOf: (t) => balanceOf(t) }))
+  if (p.lfj) {
+    const codes = await Promise.all([p.lfj.quoter, p.lfj.router].map((a) => pub.getCode({ address: a }).catch(() => undefined)))
+    if (codes.every((c) => c && c !== '0x')) venues.push(lfjVenue({ cfg: p.lfj, hubs: p.hubs, pub, T, me: account.address, rpc, toRaw, fromRaw, send, ensureAllowance }))
+    else say('skipping lfj: contracts not found')
+  }
+  if (p.textile) venues.push(textileVenue({ ...p.textile, rpc, statsFile: `${dir}/textile.json`, chainId: p.chain.id, account, T, toRaw, fromRaw, send, ensureAllowance, balanceOf: (t) => balanceOf(t) }))
   if (!venues.length) { status.error = `no exchanges found on ${p.key}`; say(status.error); return }
   // Tradable coins: every pegged token except the cash token (other dollar coins included: they depeg too).
   const corridors = () => Object.keys(T).filter((k) => k !== 'USDT' && T[k].ccy)

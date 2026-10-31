@@ -3,11 +3,24 @@
 // pool each, so Textile is what makes them tradable: buy where it is cheap, sell where it is dear.
 // Quotes: /v2/rfq/preview (free, no signature). Trades: a firm quote, then one transaction to Textile's reactor.
 import crypto from 'node:crypto'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { toHex, type Address, type Hex, type PrivateKeyAccount } from 'viem'
 import type { Venue } from '../engine.js'
 import type { Token } from './chains.js'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+// Textile's free preview is not what it pays: the firm (binding) quote can come in lower. Selling a coin to Textile
+// as the second leg of a trade is where that hurts (Kiyoshi's log: three wARS cycles in a row ended "below_min" and
+// the leftover was sold at a loss). So previews of SELLING to Textile get a haircut: the 80th percentile of how much
+// lower firm quotes have come in (learned from every firm quote, per coin, saved in textile.json), and
+// TEXTILE_SELL_HAIRCUT_BPS (5 = 0.05%) until there is enough history. Buying from Textile (it goes first) needs
+// none: its firm price is known before anything is committed, and a low one is simply refused.
+export function haircutBps(samples: number[], dflt: number, minSamples = 5): number {
+  if (samples.length < minSamples) return dflt
+  const s = [...samples].sort((a, b) => a - b)
+  return Math.max(0, s[Math.min(s.length - 1, Math.floor(s.length * 0.8))])
+}
 
 export type TextileVenue = Venue & { pools: Map<string, number[]>; addrs: Map<string, string[]>; discover(tokens: string[]): Promise<number> }
 
@@ -23,7 +36,15 @@ export function textileVenue(o: {
   send: (to: Address, data: Hex) => Promise<{ transactionHash: Hex }>
   ensureAllowance: (t: string, spender: Address, need: bigint) => Promise<void>
   balanceOf: (t: string) => Promise<bigint>
+  statsFile?: string // where firm-vs-preview history is kept
 }): TextileVenue {
+  const DEFAULT_HAIRCUT = Number(process.env.TEXTILE_SELL_HAIRCUT_BPS ?? '5')
+  let stats: Record<string, number[]> = {}
+  try { if (o.statsFile && existsSync(o.statsFile)) stats = JSON.parse(readFileSync(o.statsFile, 'utf8')) } catch { stats = {} }
+  const record = (coin: string, shortfallBps: number) => {
+    stats[coin] = [...(stats[coin] ?? []), Math.round(shortfallBps * 10) / 10].slice(-30)
+    try { if (o.statsFile) writeFileSync(o.statsFile, JSON.stringify(stats)) } catch { /* optional */ }
+  }
   const V2 = `${o.api}/v2`
   const H = { 'Content-Type': 'application/json' }
   const unwrap = async (res: Response) => {
@@ -73,7 +94,10 @@ export function textileVenue(o: {
           body: JSON.stringify({ chainId: o.chainId, sellToken: o.T[tin].address, buyToken: o.T[tout].address, sellAmount: o.toRaw(tin, amt).toString() }),
         })
         const d = await unwrap(r)
-        return d?.status === 'preview' ? o.fromRaw(tout, BigInt(d.buyAmount)) : null
+        if (d?.status !== 'preview') return null
+        let out = BigInt(d.buyAmount)
+        if (tout === 'USDT') out = (out * BigInt(10_000 - Math.round(haircutBps(stats[tin] ?? [], DEFAULT_HAIRCUT)))) / 10_000n // selling to Textile
+        return o.fromRaw(tout, out)
       }).catch(() => null)
       memo.set(k, { at: Date.now(), p })
       return p
@@ -84,7 +108,16 @@ export function textileVenue(o: {
       await o.ensureAllowance(tin, o.reactor, raw) // before quoting, so the quote window is not spent on approvals
       let q: any
       for (let i = 0; ; i++) {
-        try { q = await requestQuote({ sellToken, buyToken, sellAmount: raw.toString() }); break } catch (e: any) {
+        try {
+          const pv = await fetch(`${V2}/rfq/preview`, { method: 'POST', headers: H, signal: AbortSignal.timeout(15_000), body: JSON.stringify({ chainId: o.chainId, sellToken, buyToken, sellAmount: raw.toString() }) }).then(unwrap).catch(() => null)
+          q = await requestQuote({ sellToken, buyToken, sellAmount: raw.toString() })
+          // Learn how far firm quotes fall below previews (selling a coin to Textile only).
+          if (tout === 'USDT' && pv?.status === 'preview' && q?.quote?.buyAmount) {
+            const p0 = Number(pv.buyAmount), f0 = Number(q.quote.buyAmount)
+            if (p0 > 0) record(tin, ((p0 - f0) / p0) * 10_000)
+          }
+          break
+        } catch (e: any) {
           const msg = String(e.message)
           if (i < 3 && msg.includes('insufficient_funds')) { // a lagging node, or funds still reserved by an earlier quote
             const m = msg.match(/"retryAfterMs":(\d+)/)

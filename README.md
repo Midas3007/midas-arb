@@ -26,7 +26,8 @@ fast doesn't matter here, and small capital is enough to take what is there.
 
 - **Chains:** Celo, Base, BSC, Polygon, Arbitrum, Optimism, Avalanche, Gnosis, Sei, and Robinhood Chain (stock
   tokens, below). A chain trades only while a swap costs under $0.01 (`MAX_SWAP_GAS_USD`).
-- **Exchanges:** Uniswap v3 (and Pancake, Sushi, DragonSwap) everywhere; **Aerodrome** on Base and **Velodrome** on
+- **Exchanges:** Uniswap v3 (and Pancake, Sushi, DragonSwap) and Uniswap v4 (hookless pools, every fee tier) everywhere;
+  **LFJ** on Avalanche; **Aerodrome** on Base and **Velodrome** on
   Optimism (both their concentrated and classic stable/volatile pools); **Curve** on every chain (pools found
   through Curve's API, meta pools traded through their underlying coins); **Mento** on Celo, **Textile** (RFQ at real FX rates) on Celo, Base and BSC.
   Pools that pair a coin with another dollar coin are reached in one hop through the cheapest exchange.
@@ -71,6 +72,7 @@ idea applies with the stock price as the fair price:
 | A price feed stopped | a fair pool looks mispriced | needs 2 agreeing fresh sources; stale or disagreeing = not traded |
 | A pool nobody can trade | "off by 5%" for days | a pool off its peg for >24 h is skipped |
 | Fake token or broken pool | a quote 30% from fair | anything >20% from fair is skipped |
+| Textile's binding quote below its preview | stuck with the coin, sold at a small loss (Kiyoshi's log: 3 in a row) | selling to Textile is counted 0.05% lower, then by how far its firm quotes really fell short (learned per coin from every fill); Textile-first routes need no margin |
 | Thin exit pool | the sell leg eats the profit | sizes that move the exit pool >1% are not considered |
 | Sandwich bots | the swap fills worse than quoted | 0.3% slippage limit, every transaction simulated before sending |
 | Half-finished trade | coin left over after leg 1 | leg 2 never sells below leg 1's cost; leftovers sold by the loss guard (saved across restarts) |
@@ -205,6 +207,7 @@ failed second legs.
 - On the free public RPCs most chains finish a scan in seconds, but Polygon and Arbitrum (the most pools) take
   1-2 minutes per scan. Gaps here last minutes, so that works, but a free Alchemy/Ankr key in `POLYGON_RPCS=` /
   `ARBITRUM_RPCS=` makes them much faster. `RPC_CONCURRENCY` (default 8) is how many quotes each chain runs at once.
-- Not covered yet: Balancer (Gnosis), LFJ (Avalanche), Uniswap v4 pools, Thena/other Algebra exchanges (BSC).
+- Not covered yet: Balancer (only small pools hold our coins; its one big EURe pool pairs with Aave-wrapped USDC),
+  Uniswap v4 on Gnosis and Sei (not deployed there), Thena/other Algebra exchanges (BSC).
 - Each trade is two transactions. A one-transaction contract (no leftovers possible) is planned for chains that
   prove profitable (see `docs/PEG_HUNTER_PLAN.md`).
