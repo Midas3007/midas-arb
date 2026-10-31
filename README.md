@@ -1,167 +1,159 @@
-# Midas Arb (Kiyoshi v2)
+# Midas-arb: Peg Hunter
 
-FX arbitrage on Celo, built on [Kiyoshi](https://github.com/MELcodes99/kiyoshi) by Mel Okoye, with the original
-author's blessing. Kiyoshi compared **Uniswap v3** and **Textile FX** on three currencies. This version adds
-**Mento** as a third venue, many more currencies, and a safer, faster trading loop.
+**A stablecoin pegged to a real currency has a known fair price: the real exchange rate.** A cNGN is worth
+1/1,346 of a dollar, a EURC about $1.12, whatever a pool says. Peg Hunter watches every pool holding a
+currency-pegged stablecoin on 9 cheap-gas EVM chains, compares each pool with the real exchange rate, and when one
+is off by more than its fees, buys the cheap side there and sells it straight away on the same chain through a
+deeper pool (or Mento / Textile on Celo, which trade at real FX rates).
 
-## What changed from Kiyoshi
+Big bots skip pools with $2k of liquidity. That is where gaps of several percent can sit for minutes, so being
+fast doesn't matter here, and small capital is enough to take what is there.
 
-| Area | Kiyoshi | Midas Arb |
+> Peg Hunter replaces the Kiyoshi v2 FX desk that used to live in this repo. The previous version is commit
+> `66ac813` on `main`; to tag it: `git tag kiyoshi-v2-final 66ac813 && git push origin kiyoshi-v2-final`.
+
+## How it works
+
+```
+ fair price (Mento oracles + 2 daily FX feeds, must agree)
+        │
+ every pool of every listed stablecoin, 9 chains ──► gap after gas and fees? ──► guards ──► buy cheap, sell on the same chain
+        │                                                                          │
+ new pools checked within 60 s                         depeg · stuck pool · suspicious price · exit pool too thin
+```
+
+- **Chains:** Celo, Base, BSC, Polygon, Arbitrum, Optimism, Avalanche, Gnosis, Sei. A chain trades only while a
+  swap costs under $0.01 (`MAX_SWAP_GAS_USD`).
+- **Coins:** a hand-checked list of official addresses per chain (`src/hunter/chains.ts`): EURC, EURe, EURS, EURI,
+  cNGN, BRZ, wBRL, wARS, IDRX, TRYB, XSGD, CADC, ZARP, MXNe, jCHF, jGBP, GBPe, Mento's KESm, GHSm, XOFm, NGNm...
+  and other dollar coins (they depeg too). Every address is checked on-chain at startup (its symbol must match), so
+  copycat tokens with the same ticker are never traded. Add more with `BASE_PEGS=...` in `.env`.
+- **Fair price:** Mento's on-chain oracles (fresh within minutes on weekdays) plus open.er-api.com and the
+  fawazahmed0 currency API (daily). A currency is tradable only when two fresh sources agree within 2%. FX markets
+  close at weekends, so older prices are accepted then.
+- **Both legs on one chain:** no bridging per trade; gas is a fraction of a cent.
+- **Each chain earns its place:** it watches for 3 days first, goes live only if it saw real gaps, and is paused
+  if it stops making money.
+
+## Traps it avoids
+
+| Trap | What it looks like | What Peg Hunter does |
 |---|---|---|
-| Venues | Uniswap, Textile | Uniswap, Textile, **Mento** (any buy venue x any sell venue) |
-| Currencies | wBRL, wARS, cNGN | + USDm, EURm, BRLm, KESm, XOFm, PHPm, COPm, GHSm, USDC, plus **every other currency Mento trades** (found on-chain automatically). Discovery keeps whatever at least two venues can trade |
-| Uniswap routing | direct pool only | direct, or one hop through USDC / USDm / CELO |
-| Trade size | 100%, 50%, 25% of max | 6 sizes spread from min to max, then refined around the best |
-| Profit check | before gas | **after gas** (live gas price x CELO price) |
-| Scan speed | sequential, every 60s | all routes quoted in parallel, every 20s; repeated quotes cached for 4s to stay under rate limits |
-| Amount sold on leg 2 | the quote | what actually arrived (balance at the swap's block); fixes the `STF` reverts |
-| Leg 2 failure | could abandon the loss guard | every failure keeps the leftover under the loss guard |
-| Restarts | forgot what leftovers cost; sold at any price | leftovers saved to `pending.json`; guard survives restarts and Ctrl+C |
-| Approvals | unlimited | capped at 4 trades' worth (`APPROVAL_MODE`) |
-| Failed transactions | sent and paid for | simulated first; a revert costs nothing |
-| Bad days | none | `MAX_DAILY_LOSS_USD` stops new trades for the day |
-| Failing routes | retried every cycle | 5-minute cooldown per route |
-| RPC | one | backups via `CELO_RPCS` |
-| Alerts | none | optional Telegram |
-| Reporting | `/status`, `/trades` | + `npm run stats` (trades and profit per hour, per route) |
+| A coin really lost its peg | every pool of it is "cheap", buying never ends | all of a coin's pools >3% off the same way = depeg: frozen on that chain; on 2+ chains = the whole currency frozen. Alert on Telegram |
+| A price feed stopped | a fair pool looks mispriced | needs 2 agreeing fresh sources; stale or disagreeing = not traded |
+| A pool nobody can trade | "off by 5%" for days | a pool off its peg for >24 h is skipped |
+| Fake token or broken pool | a quote 30% from fair | anything >20% from fair is skipped |
+| Thin exit pool | the sell leg eats the profit | sizes that move the exit pool >1% are not considered |
+| Sandwich bots | the swap fills worse than quoted | 0.3% slippage limit, every transaction simulated before sending |
+| Half-finished trade | coin left over after leg 1 | leg 2 never sells below leg 1's cost; leftovers sold by the loss guard (saved across restarts) |
+| Bad days | losses pile up | $3 per chain and $5 overall daily loss limits |
 
-Everything else is Kiyoshi: the Textile RFQ client with its reactor check and reservation waits, the loss guard
-idea, equity snapshots, deposit/withdrawal tracking, the HTTP API, Convert, and the safe-shutdown logic.
+## Chain lifecycle
 
-## Run it on Android (Termux)
+| Mode | What happens | Moves on when |
+|---|---|---|
+| **watch** | scans, records what it *would* have earned (sized as if it held $20), trades nothing | after 3 days, if it saw at least 5 gaps worth $0.10 in total and gas is cheap: **live** |
+| **live** | trades (with `HUNTER_LIVE=1`) | no profit after gas over its last 7 days: **paused** |
+| **paused** | its cash moves to the live chains | after 7 days: **watch** again |
+
+`/chain base live|watch|off` on Telegram sets a chain by hand; `/chain base auto` hands it back to the rules.
+`HUNTER_START_LIVE=celo` skips the watch period for chosen chains.
+
+## Money: deposits, gas, splitting, sweeping
+
+The treasury runs every 10 minutes while `HUNTER_LIVE=1` (or by hand: `npm run treasury -- --go`).
+
+1. **Deposits:** send the gas token (ETH, BNB, POL, CELO, AVAX...) or the cash token to the bot wallet on any
+   chain. Gas token above a $2 reserve is swapped to that chain's cash token.
+2. **Gas top-ups:** a chain short of gas buys $1 of it from its own cash, or gets it bridged from the richest chain.
+3. **Splitting:** cash goes to **live** chains by what each earns per dollar (last 7 days). Every live chain gets at
+   least 5% and none more than 40%. Watch and paused chains hand their cash over. Moves under $5 and bridges
+   costing over 2% are skipped. Until a chain is live, money stays where you deposited it.
+4. **Sweeping (consolidation):** profit counts only what trades earned after gas, minus bridge fees. Deposits
+   never count. When profit not yet swept reaches **$20**, **50%** of it is bridged to **BSC as USDT**
+   (`SWEEP_CHAIN`, `SWEEP_TOKEN`), to `SWEEP_TO`: your exchange deposit address or your own wallet. The other half
+   stays and keeps trading. A chain whose part is under $3 waits for the next sweep. `/withdraw` sweeps now.
+   - If `SWEEP_TO` is empty, swept money stays in the bot wallet on BSC, **set aside** (never traded). After you
+     withdraw it by hand, run `npm run withdraw -- --release 25` so the bot stops setting that $25 aside.
+5. **Trade size grows with the money:** each trade is at most 20% of that chain's cash (`TRADE_PCT`), at most
+   $100 (`MAX_TRADE_USD_CAP`). Small wallets may still trade $2.
+
+## Run it on Termux (Android)
 
 You need Termux (from F-Droid) with Node.js and git, as for Kiyoshi.
 
-**1. Stop the old bot** (only one bot may use a wallet): in its Termux session press `CTRL` then `c`, wait for
-`stopped cleanly`.
-
-**2. Download this bot**
 ```
-cd ~
-git clone https://github.com/Midas3007/midas-arb
-cd midas-arb
+pkg install nodejs git
+cd ~ && git clone https://github.com/Midas3007/midas-arb && cd midas-arb
 npm install
-```
-
-**3. Bring your settings**
-```
 cp .env.example .env
-nano .env
-```
-Put your existing key after `AGENT_PRIVATE_KEY=` (the same one as in `~/kiyoshi/.env`; view it with
-`cat ~/kiyoshi/.env`). Leave `LIVE=0` for now. Save: `CTRL`+`o`, Enter. Exit: `CTRL`+`x`.
-
-**4. Check the connection** (read-only)
-```
-npm run check
-```
-
-**5. Dry run: watch it find routes and price them (sends nothing)**
-```
-npm run desk
-```
-The first cycle prints `discovery:` with how many routes it found and which venue trades which currency, then
-the best routes with their profit after gas. Let it run a while; `would trade` lines are what it would have done.
-Stop with `CTRL`+`c`.
-
-**6. Go live**: set `LIVE=1` in `.env`, then
-```
+npm run new-wallet          # a NEW wallet, only for Peg Hunter
+nano .env                   # paste the key after HUNTER_PRIVATE_KEY=, keep HUNTER_LIVE=0
+npm run check               # read-only: chains, exchanges, coins, fair prices
 termux-wake-lock
-npm run desk
+npm start                   # watch only: scans every chain, trades nothing
 ```
-Start with a small `MAX_TRADE_USD` and raise it once you have seen it trade cleanly.
 
-**Updates later**: `cd ~/midas-arb && git pull && npm install`, then start it again.
+Leave it watching for 3 days, then `npm run report`. It shows, per chain, the gaps it saw, what they would have
+earned, which routes, and how long gaps stayed open. To trade:
 
-**Stats**: `npm run stats`.
+1. Fund the wallet: a little gas token on each chain you expect to use, and cash (or more gas token, which is
+   converted) on any one chain.
+2. Set `HUNTER_LIVE=1` and `SWEEP_TO=` your withdrawal address in `.env`, then `npm start` again.
+3. Chains that earned their place in watch mode trade; the treasury moves cash to them.
 
-**Mento check** (read-only): `npm run mento` lists Mento's exchanges and tests a $5 round trip per currency.
+Stop with `CTRL`+`c`: a chain in the middle of a trade finishes it first.
+**Updates:** `git pull && npm install`, then start again.
 
-If `git pull` says *Please commit your changes or stash them*, run `git stash` first, then `git pull` again.
+### Moving to Render later
 
-## BSC and Polygon (multi-chain desk)
+Once `npm run report` shows which chains make money, run only those on Render with `HUNTER_CHAINS=celo,base`
+(and keep the rest on the phone with the complement, or switch them off). One wallet must not run in two places
+for the same chain. Copy `data/` along so the ledger and sweep marks carry over.
 
-A separate bot with its **own wallet** that trades USDT round trips between two exchanges on each chain
-(BSC: PancakeSwap + Uniswap; Polygon: Uniswap + SushiSwap; Base: Uniswap + PancakeSwap + SushiSwap, trading
-against USDC). It never touches the Celo wallet. It focuses on local currencies, euro/franc/pound stablecoins and
-gold; big tokens (BNB, ETH, BTC) are skipped unless `MULTI_MAJORS=1`.
+## Telegram
 
-1. `npm run new-wallet`, put the key in `.env` as `MULTI_PRIVATE_KEY=` (keep `MULTI_LIVE=0`).
-2. Fund that wallet with USDT plus a little gas: **BNB** on BSC, **POL** on Polygon, **ETH** on Base (Base uses **USDC** instead of USDT).
-3. Dry run: `npm run multi -- bsc` or `npm run multi -- polygon`, or several at once: `npm run multi -- bsc polygon base`.
-4. Live: set `MULTI_LIVE=1`. Each chain keeps its own files in `data-bsc/` and `data-polygon/`.
+Create a bot with @BotFather, message it once, read your chat id from
+`https://api.telegram.org/bot<TOKEN>/getUpdates`, put both in `.env`. Only your chat is obeyed.
 
-The Celo desk (`npm run desk`) and this one can run at the same time in two Termux sessions.
+| Command | |
+|---|---|
+| `/status` | profit (all time, today, not yet swept, swept), each chain's mode, cash and results |
+| `/chains` | each chain's mode and why |
+| `/chain base live` | also `watch`, `off`, `auto` |
+| `/gaps` | pools furthest from their peg right now (`/gaps 1` = at least 1%) |
+| `/withdraw` | sweep profit now |
+| `/pause` `/resume` | stop / restart new trades |
 
-**Robinhood Chain** (`npm run multi -- robinhood`): Uniswap v3 and Uniswap v4 on Robinhood's L2 (v4 holds most of
-the stock-token liquidity; v4 pools paired with native ETH are skipped). At startup the bot reads
-Uniswap's pool list from the chain's explorer and picks up every token pooled against USDG or WETH, including
-Robinhood's tokenized stocks. Copycat tokens with the same ticker exist, so only addresses you list in
-`ROBINHOOD_ALLOW` (from Robinhood's official Stock Token registry) can trade live; the rest are dry-run only.
-Gas is ETH on Robinhood Chain; cash is USDG.
+Alerts: start, trades of $1 or more, depeg freezes, new pools of our coins, chains promoted or paused, sweeps,
+failed second legs.
 
-**Spreading capital across chains** (`npm run multi-split`): deposit cash plus a little gas on any one chain,
-then `npm run multi-split` shows a plan to split it evenly (and send ~$1 of gas to chains that have none), using
-LI.FI to pick the cheapest bridge. `npm run multi-split -- --go` does it; add `--watch` to keep checking every
-10 minutes so new deposits are spread automatically. Bridges costing more than 2% are skipped
-(`SPLIT_MAX_FEE_PCT`), and imbalances under $5 are left alone (`SPLIT_MIN_MOVE_USD`).
+## Commands
 
-## Reacting to trades
+| | |
+|---|---|
+| `npm start` | run (all chains, or `npm start -- base celo`) |
+| `npm run check` | read-only health check |
+| `npm run report` | what each chain saw and earned (`-- 7` for a week) |
+| `npm run treasury` | one treasury round, plan only (`-- --go` to do it) |
+| `npm run withdraw` | sweep now, plan only (`-- --go` to do it) |
+| `npm test` / `npm run typecheck` | 35 tests: engine, peg guards, fair price, lifecycle, splitting, sweeping |
 
-Both desks watch the pools they trade through (and Mento's Broker and price oracles on Celo). Every
-`WATCH_MS` (default 1500 ms) they check new blocks; when a watched pool trades, the affected currencies are
-rescanned at once instead of waiting for the next `INTERVAL_SEC` scan. Quick rescans stay silent unless they
-find a trade; the full scan line shows how many happened. Textile has no on-chain price feed, so its quotes are
-still checked on the full scan.
+## Files
 
-## Settings
-
-All in `.env`; see `.env.example` for the full list with defaults. The ones you are most likely to change:
-
-| Setting | Default | What it does |
-|---|---|---|
-| `LIVE` | `0` | `1` trades real money |
-| `MAX_TRADE_USD` | `70` | largest trade (never more than 90% of your USDT) |
-| `MIN_EDGE_USD` | `0.02` | smallest profit worth taking, after gas |
-| `INTERVAL_SEC` | `20` | seconds between scans |
-| `MAX_DAILY_LOSS_USD` | `5` | stop opening trades for the day after this realized loss |
-| `VENUES` | `uniswap,textile,mento` | drop one to stop using it |
-| `CORRIDORS` | all | limit to some currencies, e.g. `wBRL,BRLm` |
-
-## Telegram alerts (optional)
-
-1. In Telegram, message **@BotFather**, send `/newbot`, follow the steps, copy the token.
-2. Message your new bot once, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser and copy
-   the `"chat":{"id": ...}` number.
-3. Add `TELEGRAM_BOT_TOKEN=...` and `TELEGRAM_CHAT_ID=...` to `.env`.
-
-You get a message on start, on every failed second leg, on leftover sales, and on new errors.
-
-## How a trade works
-
-1. **Flatten**: any leftover currency is sold if the best exit loses at most 0.5% of its cost, or after 30 minutes.
-   No new trades while holding.
-2. **Discover** (every 6 hours): find Uniswap pools, read Mento's exchanges from its Broker, and check which venues
-   can quote each currency both ways for ~$5.
-3. **Scan**: for every route (currency, buy venue, sell venue), search for the most profitable size and subtract
-   gas.
-4. **Trade** the best route if its profit after gas is at least `MIN_EDGE_USD`:
-   - leg 1 buys the currency with a 0.3% slippage limit (Textile: a firm quote that must meet the same limit);
-   - the leftover is recorded in `pending.json` before leg 2;
-   - leg 2 sells exactly what arrived, and never for less than leg 1 cost (break-even floor);
-   - if leg 2 fails for any reason, the route cools down for 5 minutes and step 1 takes over the leftover.
-
-## Tests
-
-```
-npm test        # routes, size search, loss guard, kill switch, pending store (fake venues, no network)
-npm run typecheck
-```
+`data/state.json` (modes, sweep marks, set-aside money), `data/ledger.jsonl` (every realized result), and per chain
+`data/<chain>/`: `trades.jsonl`, `opps.jsonl` (every gap worth trading), `scans.jsonl`, `pending.json` (leftovers).
 
 ## Limits
 
-- Mento quotes revert while an oracle is stale or a trading limit is reached; such routes simply drop out until
-  they work again. A Mento trade through USDm is two transactions; if the second fails, the USDm left over is
-  sold by the loss guard like any leftover.
-- Profit depends on gaps other traders open. Competing bots on the same routes take some of them.
-- Not audited. Keep only trading capital in the agent wallet.
+- Not audited. Keep only trading capital in the bot wallet.
+- Gaps come from other people's trades and new pools; quiet weeks earn little. The watch period exists to measure
+  this before risking money.
+- Mento's oracles stop at weekends, so Mento routes close then. Textile and the pools keep trading.
+- On the free public RPCs most chains finish a scan in seconds, but Polygon and Arbitrum (the most pools) take
+  1-2 minutes per scan. Gaps here last minutes, so that works, but a free Alchemy/Ankr key in `POLYGON_RPCS=` /
+  `ARBITRUM_RPCS=` makes them much faster. `RPC_CONCURRENCY` (default 8) is how many quotes each chain runs at once.
+- Gnosis has no usable Uniswap pools for its stablecoins (they trade on Curve and Balancer), so it finds no
+  routes for now; it costs nothing to keep watching.
+- Each trade is two transactions. A one-transaction contract (no leftovers possible) is planned for chains that
+  prove profitable (see `docs/PEG_HUNTER_PLAN.md`).

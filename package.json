@@ -1,18 +1,15 @@
 {
   "name": "midas-arb",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "type": "module",
   "private": true,
   "scripts": {
+    "start": "tsx src/hunter/main.ts",
+    "check": "tsx src/hunter/check.ts",
+    "report": "tsx src/hunter/report.ts",
+    "treasury": "tsx src/hunter/treasury.ts",
+    "withdraw": "tsx src/hunter/treasury.ts --withdraw",
     "new-wallet": "tsx src/new-wallet.ts",
-    "check": "tsx src/check.ts",
-    "desk": "tsx src/desk.ts",
-    "multi": "tsx src/multi/desk.ts",
-    "multi-stats": "tsx src/multi/stats.ts",
-    "multi-split": "tsx src/multi/split.ts",
-    "stats": "tsx src/stats.ts",
-    "mento": "tsx src/mento-check.ts",
-    "balances": "tsx src/balances.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
@@ -26,7 +23,7 @@
     "tsx": "4.19.2",
     "typescript": "5.6.3"
   },
-  "description": "Kiyoshi FX arbitrage on Celo, extended: Uniswap v3 + Textile FX + Mento, more pairs, safer execution",
+  "description": "Midas-arb: Peg Hunter. Finds pools where currency-pegged stablecoins trade away from their real exchange rate, on cheap-gas EVM chains, and trades them back",
   "engines": {
     "node": ">=20"
   }

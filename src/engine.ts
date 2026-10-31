@@ -49,28 +49,39 @@ export function sizeLadder(minSize: bigint, maxSize: bigint, rungs = 6): bigint[
   return [...out]
 }
 
-export async function bestSize(route: Route, minSize: bigint, maxSize: bigint, gasUsd: number): Promise<Opp | null> {
+// How much worse the exit (sell leg) price is at this size than in a tiny trade, in basis points. The buy leg is
+// left alone on purpose: moving a dislocated pool back toward fair is where the profit comes from. The exit is
+// meant to be a deep pool, so a big move there means the trade is too large for it.
+export function exitImpactBps(o: Opp, probe: Opp): number {
+  if (o.mid <= 0n || probe.mid <= 0n || probe.out <= 0n) return 0
+  const unit = Number(o.out) / Number(o.mid), unit0 = Number(probe.out) / Number(probe.mid)
+  return unit0 > 0 ? Math.max(0, (1 - unit / unit0) * 10_000) : 0
+}
+
+export async function bestSize(route: Route, minSize: bigint, maxSize: bigint, gasUsd: number, maxExitImpactBps = Infinity, probe?: Opp): Promise<Opp | null> {
   if (maxSize < minSize || minSize <= 0n) return null
   const ladder = sizeLadder(minSize, maxSize)
-  const rungs = (await Promise.all(ladder.map((s) => evaluate(route, s, gasUsd).catch(() => null)))).filter(Boolean) as Opp[]
+  const fits = (o: Opp) => !probe || exitImpactBps(o, probe) <= maxExitImpactBps
+  const rungs = ((await Promise.all(ladder.map((s) => evaluate(route, s, gasUsd).catch(() => null)))).filter(Boolean) as Opp[]).filter(fits)
   if (!rungs.length) return null
   rungs.sort((a, b) => b.net - a.net)
   const best = rungs[0]
   if (best.net <= 0) return best
   const i = ladder.indexOf(best.size)
   const probes = [ladder[i - 1], ladder[i + 1]].filter((n): n is bigint => n !== undefined).map((n) => (best.size + n) / 2n)
-  const refined = (await Promise.all(probes.map((s) => evaluate(route, s, gasUsd).catch(() => null)))).filter(Boolean) as Opp[]
+  const refined = ((await Promise.all(probes.map((s) => evaluate(route, s, gasUsd).catch(() => null)))).filter(Boolean) as Opp[]).filter(fits)
   return [best, ...refined].sort((a, b) => b.net - a.net)[0]
 }
 
 // The smallest trade gets the best price (no price impact), so a route that loses before gas at minSize loses at
 // every size: one quote rules it out, and only routes with a positive edge get the full size search.
 // This cuts the RPC work of a scan by most of it.
-export async function scanRoutes(routes: Route[], minSize: bigint, maxSize: bigint, gasUsdFor: (r: Route) => number): Promise<Opp[]> {
+// maxExitImpactBps: sizes that move the exit pool's price more than this are not considered (see exitImpactBps).
+export async function scanRoutes(routes: Route[], minSize: bigint, maxSize: bigint, gasUsdFor: (r: Route) => number, maxExitImpactBps = Infinity): Promise<Opp[]> {
   const found = await Promise.all(routes.map(async (r) => {
     const probe = await evaluate(r, minSize, gasUsdFor(r)).catch(() => null)
     if (!probe || probe.edge <= 0) return probe
-    return bestSize(r, minSize, maxSize, gasUsdFor(r)).catch(() => probe)
+    return bestSize(r, minSize, maxSize, gasUsdFor(r), maxExitImpactBps, probe).catch(() => probe)
   }))
   return (found.filter(Boolean) as Opp[]).sort((a, b) => b.net - a.net)
 }

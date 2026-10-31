@@ -113,3 +113,15 @@ test('scanRoutes quotes a losing route once instead of running the size search',
   assert.ok(o.edge < 0)
   assert.equal(calls, 1)
 })
+
+test('exit impact: sizes that push the exit pool more than the limit are not chosen', async () => {
+  const { exitImpactBps, scanRoutes } = await import('../src/engine.js')
+  // Buy pool is deep and 3% cheap; the exit pool is shallow ($500 a side), so bigger sizes move its price a lot.
+  const routes = [{ X: 'X', buy: amm('cheap', 1.03, 1_000_000), sell: amm('thin', 1, 500) }]
+  const free = await scanRoutes(routes, $(1), $(40), () => 0)
+  const capped = await scanRoutes(routes, $(1), $(40), () => 0, 100)
+  const probe = (await scanRoutes(routes, $(1), $(1), () => 0))[0]
+  assert.ok(exitImpactBps(capped[0], probe) <= 100)
+  assert.ok(exitImpactBps(free[0], probe) > 100)
+  assert.ok(capped[0].size < free[0].size)
+})
