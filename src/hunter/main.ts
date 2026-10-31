@@ -13,6 +13,7 @@ import { LIFECYCLE, nextState } from './policy.js'
 import { Ledger, Locks, Store } from './store.js'
 import { telegramLoop } from './telegram.js'
 import { treasuryRound } from './treasury.js'
+import { inflight } from './inflight.js'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const wanted = process.argv.slice(2).filter((a) => !a.startsWith('--')).map((s) => s.toLowerCase())
@@ -32,7 +33,6 @@ const ctx: Ctx = {
   live,
   status: new Map(),
   stopping: () => stopping,
-  busy: { n: 0 },
 }
 
 // Fair prices first (the desks need them), then keep them fresh.
@@ -70,12 +70,14 @@ if (live) (async () => {
 
 telegramLoop(ctx, keys).catch((e) => console.log(`telegram stopped: ${e?.message ?? e}`))
 
-// Ctrl+C: let any chain finish the trade it is in, then exit.
+// Ctrl+C: exits at once, unless a transaction is being sent right now (a trade's legs, a bridge, a deposit):
+// then it waits only for that. Ctrl+C again forces it (a half-finished trade is sold by the loss guard on restart).
 process.on('SIGINT', () => {
+  if (stopping) { console.log('forced stop'); process.exit(1) }
   stopping = true
-  console.log('stop requested' + (ctx.busy.n ? '; finishing current trades first' : ''))
-  if (!ctx.busy.n) process.exit(0)
-  const t = setInterval(() => { if (!ctx.busy.n) { clearInterval(t); console.log('stopped cleanly'); process.exit(0) } }, 500)
+  if (!inflight.n) { console.log('stopped'); process.exit(0) }
+  console.log(`stopping: finishing ${inflight.n} transaction(s) in progress (Ctrl+C again to force)`)
+  const t = setInterval(() => { if (!inflight.n) { clearInterval(t); console.log('stopped cleanly'); process.exit(0) } }, 200)
 })
 
 console.log(`Peg Hunter ${live ? 'LIVE' : 'WATCH ONLY'} | chains: ${keys.map((k) => `${k} (${ctx.store.state.chains[k].mode})`).join(', ')}`)

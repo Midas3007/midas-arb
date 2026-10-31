@@ -45,5 +45,7 @@ exchange rate on cheap-gas EVM chains and trades them back, with both legs on on
 2. Fund the chains that earned their place; `HUNTER_LIVE=1` with a `SWEEP_TO` address.
 3. Move the profitable chains to Render (`HUNTER_CHAINS=...`), with private RPC URLs.
 4. One-transaction trade contract on those chains (no leftovers possible, one gas payment).
-5. More venues where pegged coins have deep liquidity off Uniswap-v3: Curve (EURe on Gnosis), Velodrome/Aerodrome
-   (Optimism/Base), LFJ (Avalanche).
+5. ~~More venues~~ **done 31 Oct:** Aerodrome + Velodrome (concentrated and classic), Curve on every chain. Base
+   went from 206 to 308 routes, Optimism 84 to 128, Gnosis 0 to 4. Still open: Balancer, LFJ, Uniswap v4.
+6. ~~Other income~~ **done 31 Oct:** idle cash in Aave v3 between trades; Merkl reward claims.
+7. Capped inventory (one swap per gap instead of a round trip; cross-chain without per-trade bridging).

@@ -20,8 +20,12 @@ import { ATTRIBUTION_TAG, DATA_DIR } from '../config.js'
 import { envDexes, type ChainProfile, type Dex } from './chains.js'
 import { clientsFor } from './clients.js'
 import { mentoVenue } from './mento.js'
-import { hopVenue } from './hop.js'
+import { bestOf, hopVenue } from './hop.js'
+import { solidlyVenue } from './solidly.js'
+import { curveVenue } from './curve.js'
 import { limiter } from './limit.js'
+import { inflight } from './inflight.js'
+import { aaveInfo, aaveWithdraw, parkedUnits } from './savings.js'
 import { textileVenue } from './textile.js'
 import { blockReason, maxTradeUsd, poolDev, RULES, type PegBoard } from './peg.js'
 import type { FairPrices } from './fair.js'
@@ -29,6 +33,7 @@ import type { Ledger, Locks, Store } from './store.js'
 
 export type ChainStatus = {
   started: boolean; gasOk: boolean; swapGasUsd: number; cashUsd: number; routes: number; tokens: string[]
+  parkedUsd: number; apyPct: number // cash earning interest in Aave, and its rate
   lastScanAt: number; lastLine: string; error?: string
 }
 export type Ctx = {
@@ -36,7 +41,6 @@ export type Ctx = {
   live: boolean // HUNTER_LIVE=1
   status: Map<string, ChainStatus>
   stopping: () => boolean
-  busy: { n: number }
 }
 
 const n = (k: string, d: string) => Number(process.env[k] ?? d)
@@ -54,10 +58,12 @@ const MAX_FLATTEN_LOSS_BPS = 50, MAX_HOLD_MS = 30 * 60_000, COOLDOWN_MS = 5 * 60
 const MODE = process.argv.includes('--scan') ? 'scan' : process.argv.includes('--watch') ? 'watch' : (process.env.MODE ?? 'both')
 
 const factoryAbi = parseAbi(['function getPool(address,address,uint24) view returns (address)'])
+const slipFactoryAbi = parseAbi(['function getPool(address,address,int24) view returns (address)']) // keyed by tick spacing
 const quoterAbi = parseAbi(['function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut, uint160[], uint32[], uint256)'])
 const router02Abi = parseAbi(['function exactInput((bytes path, address recipient, uint256 amountIn, uint256 amountOutMinimum)) payable returns (uint256)'])
 const routerV1Abi = parseAbi(['function exactInput((bytes path, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum)) payable returns (uint256)'])
 const poolCreated = parseAbiItem('event PoolCreated(address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool)')
+const slipPoolCreated = parseAbiItem('event PoolCreated(address indexed token0, address indexed token1, int24 indexed tickSpacing, address pool)')
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const errMsg = (e: any) => String(e?.shortMessage ?? e?.message ?? e).split('\n')[0]
 const pct = (d: number | null) => (d === null ? '?' : `${d >= 0 ? '+' : ''}${(d * 100).toFixed(2)}%`)
@@ -69,7 +75,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   const tag = `[${p.key}]`
   const say = (s: string) => console.log(`${tag} ${s}`)
   const { pub, wallet, account } = clientsFor(p)
-  const status: ChainStatus = { started: false, gasOk: false, swapGasUsd: 0, cashUsd: 0, routes: 0, tokens: [], lastScanAt: 0, lastLine: 'starting' }
+  const status: ChainStatus = { started: false, gasOk: false, swapGasUsd: 0, cashUsd: 0, parkedUsd: 0, apyPct: 0, routes: 0, tokens: [], lastScanAt: 0, lastLine: 'starting' }
   ctx.status.set(p.key, status)
   const dir = `${DATA_DIR}/${p.key}`
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
@@ -159,7 +165,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const memo = new Map<string, { at: number; p: Promise<bigint | null> }>()
     const addrs = new Map<string, string[]>() // pool address -> its two tokens (for the watcher)
     return {
-      name: lane.kind === 'all' ? d.name : lane.kind === 'fee' ? `${d.name}/${lane.fee / 10_000}%` : `${d.name}/via-${lane.hub}`,
+      name: lane.kind === 'all' ? d.name : lane.kind === 'fee' ? (d.kind === 'slipstream' ? `${d.name}/ts${lane.fee}` : `${d.name}/${lane.fee / 10_000}%`) : `${d.name}/via-${lane.hub}`,
       gas: lane.kind === 'hub' ? d.gas + 60_000 : d.gas,
       pools,
       addrs,
@@ -169,7 +175,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
         for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) pairs.push([all[i], all[j]])
         const res = await pub.multicall({
           allowFailure: true,
-          contracts: pairs.flatMap(([a, b]) => d.fees.map((fee) => ({ address: d.factory, abi: factoryAbi, functionName: 'getPool', args: [T[a].address, T[b].address, fee] } as const))),
+          contracts: pairs.flatMap(([a, b]) => d.fees.map((fee) => ({ address: d.factory, abi: (d.kind === 'slipstream' ? slipFactoryAbi : factoryAbi) as typeof factoryAbi, functionName: 'getPool', args: [T[a].address, T[b].address, fee] } as const))),
         })
         pools.clear(); addrs.clear()
         res.forEach((r, i) => {
@@ -251,6 +257,20 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       const receivedByHash = async (t: string, before: bigint, hash: Hex) => received(t, before, (await pub.getTransactionReceipt({ hash })).blockNumber)
       venues.push(hopVenue(m, p.mento.hub, hubVenue, { balanceOf: (t) => balanceOf(t), received: receivedByHash, slippageBps: SLIPPAGE_BPS }))
     } else say('skipping mento: Broker or Uniswap not found')
+  }
+  // Aerodrome / Velodrome classic pools, and Curve (plus Curve pools that pair a coin with a hub, reached in one hop).
+  for (const sv of p.solidly ?? []) {
+    const codes = await Promise.all([sv.router, sv.factory].map((a) => pub.getCode({ address: a }).catch(() => undefined)))
+    if (codes.every((c) => c && c !== '0x')) venues.push(solidlyVenue({ ...sv, hubs: p.hubs, pub, T, me: account.address, rpc, toRaw, fromRaw, send, ensureAllowance }))
+    else say(`skipping ${sv.name}: contracts not found`)
+  }
+  if (p.curve) {
+    const cv = curveVenue({ apiChain: p.curve, pub, T, rpc, toRaw, fromRaw, send, ensureAllowance })
+    venues.push(cv)
+    const others = () => venues.filter((v) => v !== cv && !v.name.startsWith('curve'))
+    const receivedByHash = async (t: string, before: bigint, hash: Hex) => received(t, before, (await pub.getTransactionReceipt({ hash })).blockNumber)
+    for (const h of p.hubs.filter((h) => T[h]?.ccy))
+      venues.push(hopVenue(cv, h, bestOf(`best-${h}`, others), { name: `curve/via-${h}`, balanceOf: (t) => balanceOf(t), received: receivedByHash, slippageBps: SLIPPAGE_BPS }))
   }
   if (p.textile) venues.push(textileVenue({ ...p.textile, rpc, chainId: p.chain.id, account, T, toRaw, fromRaw, send, ensureAllowance, balanceOf: (t) => balanceOf(t) }))
   if (!venues.length) { status.error = `no exchanges found on ${p.key}`; say(status.error); return }
@@ -345,7 +365,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       try {
         spentNative = 0n
         const before = await balanceOf('USDT')
-        const h = await exit.venue.swap(X, 'USDT', bal, (exit.out * (10_000n - SLIPPAGE_BPS)) / 10_000n)
+        const h = await inflight.run(() => exit.venue.swap(X, 'USDT', bal, (exit.out * (10_000n - SLIPPAGE_BPS)) / 10_000n))
         const { blockNumber } = await pub.getTransactionReceipt({ hash: h })
         const out = fromRaw('USDT', await received('USDT', before, blockNumber))
         const gas = Number(formatUnits(spentNative, 18)) * (await nativePrice())
@@ -442,15 +462,18 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     if (head <= poolBlock) return false
     const from = head - poolBlock > 2000n ? head - 1999n : poolBlock + 1n
     const ours = corridors().map((k) => T[k].address)
-    const [a, b] = await Promise.all([
+    const slip = [...p.dexes, ...envDexes(p.key)].filter((d) => d.kind === 'slipstream').map((d) => d.factory)
+    const [a, b, c, d] = await Promise.all([
       pub.getLogs({ address: dexFactories, event: poolCreated, args: { token0: ours }, fromBlock: from, toBlock: head }).catch(() => []),
       pub.getLogs({ address: dexFactories, event: poolCreated, args: { token1: ours }, fromBlock: from, toBlock: head }).catch(() => []),
+      slip.length ? pub.getLogs({ address: slip, event: slipPoolCreated, args: { token0: ours }, fromBlock: from, toBlock: head }).catch(() => []) : [],
+      slip.length ? pub.getLogs({ address: slip, event: slipPoolCreated, args: { token1: ours }, fromBlock: from, toBlock: head }).catch(() => []) : [],
     ])
     poolBlock = head
-    const found = [...a, ...b]
+    const found = [...a, ...b, ...c, ...d]
     if (!found.length) return false
     const name = (addr: string) => Object.keys(T).find((k) => T[k].address.toLowerCase() === addr.toLowerCase()) ?? addr.slice(0, 8)
-    const list = found.map((l: any) => `${name(l.args.token0)}/${name(l.args.token1)} ${Number(l.args.fee) / 10_000}%`).join(', ')
+    const list = found.map((l: any) => `${name(l.args.token0)}/${name(l.args.token1)} ${l.args.fee !== undefined ? `${Number(l.args.fee) / 10_000}%` : `ts${l.args.tickSpacing}`}`).join(', ')
     say(`NEW POOL: ${list}; rediscovering now`)
     notify(`${p.key}: new pool ${list}. Checking it for a mispriced start.`)
     return true
@@ -484,8 +507,11 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     status.swapGasUsd = await gasUsd(180_000)
     status.gasOk = status.swapGasUsd <= MAX_SWAP_GAS_USD
     const reserved = ctx.store.state.reserved[p.key] ?? 0
-    const cashUsd = Math.max(0, usd(fromRaw('USDT', await balanceOf('USDT').catch(() => 0n))) - reserved)
-    status.cashUsd = cashUsd
+    const c = clientsFor(p), sav = await aaveInfo(c).catch(() => null)
+    const liquidRaw = await balanceOf('USDT').catch(() => 0n), parkedRaw = sav ? await parkedUnits(c) : 0n
+    const liquidUsd = usd(fromRaw('USDT', liquidRaw)), parkedUsd = usd(fromRaw('USDT', parkedRaw))
+    const cashUsd = Math.max(0, liquidUsd + parkedUsd - reserved) // parked cash counts: a trade pulls it out first
+    status.cashUsd = cashUsd; status.parkedUsd = parkedUsd; status.apyPct = sav?.apyPct ?? 0
     // Size grows with the chain's cash (TRADE_PCT of it). Watch mode sizes as if the chain held WATCH_SIZE_USD.
     const sizeUsd = tradeLive ? maxTradeUsd(cashUsd) : maxTradeUsd(Math.max(cashUsd, WATCH_SIZE_USD))
     const maxSize = parseUnits(sizeUsd.toFixed(6), 6), minSize = probeUsd
@@ -519,7 +545,23 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     if (!tradingAllowed(ctx.ledger.today(p.key), MAX_DAILY_LOSS_USD)) { say(`  paused for today: ${p.key} lost $${MAX_DAILY_LOSS_USD}`); return }
     if (!tradingAllowed(ctx.ledger.today(null), GLOBAL_DAILY_LOSS_USD)) { say(`  paused for today: all chains together lost $${GLOBAL_DAILY_LOSS_USD}`); return }
     log('opps.jsonl', { route: routeName(o.route), sizeUsd: usd(o.size), net: o.net, buyDev, sellDev, mode: 'live' })
-    const net = await execute(o) // the whole scan already holds this chain's lock
+    // Cash parked in Aave comes out first, in this same lock, so the trade has it. Its gas counts in the trade.
+    const short = o.size - fromRaw('USDT', liquidRaw - toRaw('USDT', BigInt(Math.round(reserved * 1e6))))
+    if (short > 0n) {
+      if (!sav || parkedRaw === 0n) { say('  not enough liquid cash for this trade'); return }
+      const want = toRaw('USDT', short + short / 100n + 1000n)
+      const take = want > parkedRaw ? parkedRaw : want
+      try {
+        spentNative = 0n
+        await inflight.run(() => aaveWithdraw(c, take, send))
+        const gas = Number(formatUnits(spentNative, 18)) * (await nativePrice())
+        if (gas > 0) ctx.ledger.add({ chain: p.key, kind: 'fee', net: -gas, note: 'took cash out of Aave for a trade' })
+        const S = ctx.store.state
+        S.parked[p.key] = Math.max(0, (S.parked[p.key] ?? 0) - usd(fromRaw('USDT', take)))
+        ctx.store.save()
+      } catch (e) { say(`  could not take cash out of Aave (${errMsg(e)}); skipping this trade`); return }
+    }
+    const net = await inflight.run(() => execute(o)) // the whole scan already holds this chain's lock
     say(`  result: ${net === null ? 'incomplete (leftover managed by the loss guard)' : `${net >= 0 ? '+' : ''}${net.toFixed(4)} after gas`}`)
     if (net !== null && usd(o.size) >= ALERT_TRADE_USD) notify(`${p.key}: ${routeName(o.route)} $${usd(o.size).toFixed(2)} -> ${net >= 0 ? '+' : ''}$${net.toFixed(4)} after gas`)
   }
@@ -531,9 +573,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   let focus: Set<string> | null = null, lastFull = 0
   while (!ctx.stopping()) {
     if (!focus) lastFull = Date.now()
-    ctx.busy.n++
     try { await ctx.locks.run(p.key, () => cycle(focus)); status.error = undefined } catch (e) { status.error = errMsg(e); say(`cycle error: ${status.error}`) }
-    ctx.busy.n--
     if (ctx.stopping()) break
     const left = Math.max(0, lastFull + fullEvery - Date.now())
     if (MODE === 'scan') { focus = null; await sleep(left); continue }

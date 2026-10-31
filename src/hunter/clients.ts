@@ -1,7 +1,8 @@
 // One wallet (HUNTER_PRIVATE_KEY) on every chain, with one RPC connection per chain shared by the desk and the
 // treasury.
 import 'dotenv/config'
-import { createPublicClient, createWalletClient, fallback, http, type Hex, type PrivateKeyAccount, type PublicClient, type WalletClient } from 'viem'
+import { cheapFees } from '../fees.js'
+import { createPublicClient, createWalletClient, fallback, http, type Address, type Hex, type PrivateKeyAccount, type PublicClient, type WalletClient } from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import type { ChainProfile } from './chains.js'
 
@@ -39,4 +40,14 @@ export function clientsFor(p: ChainProfile): ChainClients {
   }
   cache.set(p.key, c)
   return c
+}
+
+// Send one transaction for the treasury: simulated first (a revert costs nothing), cheap fees, wait for success.
+export async function sendTx(c: ChainClients, to: Address, data: Hex) {
+  await c.pub.call({ account: c.account, to, data })
+  const fees = await cheapFees(c.pub, { account: c.account.address, to, data }).catch(() => ({}))
+  const hash = await c.wallet.sendTransaction({ account: c.account, chain: c.p.chain, to, data, ...fees } as any)
+  const r = await c.pub.waitForTransactionReceipt({ hash, timeout: 120_000 })
+  if (r.status !== 'success') throw new Error(`transaction reverted: ${hash}`)
+  return r
 }

@@ -11,6 +11,7 @@ export type State = {
   chains: Record<string, ChainState>
   marks: Record<string, number> // sweep high-water mark per chain (cumulative profit at its last sweep)
   reserved: Record<string, number> // dollars of the cash token kept aside for withdrawal (when swept to this wallet)
+  parked: Record<string, number> // dollars put into Aave (what grows above this is interest, booked as yield)
   sweptUsd: number // everything swept so far
 }
 
@@ -22,7 +23,7 @@ export class Store {
     let s: Partial<State> = {}
     if (existsSync(this.file)) { try { s = JSON.parse(readFileSync(this.file, 'utf8')) } catch { s = {} } }
     const startLive = new Set((process.env.HUNTER_START_LIVE ?? '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean))
-    this.state = { paused: s.paused ?? false, chains: s.chains ?? {}, marks: s.marks ?? {}, reserved: s.reserved ?? {}, sweptUsd: s.sweptUsd ?? 0 }
+    this.state = { paused: s.paused ?? false, chains: s.chains ?? {}, marks: s.marks ?? {}, reserved: s.reserved ?? {}, parked: s.parked ?? {}, sweptUsd: s.sweptUsd ?? 0 }
     for (const k of chainKeys) if (!this.state.chains[k])
       this.state.chains[k] = startLive.has(k) ? { ...freshState('live', now, 'started live (HUNTER_START_LIVE)'), manual: true } : freshState('watch', now, 'new chain: watching first')
     this.save()
@@ -34,7 +35,7 @@ export class Store {
   }
 }
 
-export type Entry = { ts: number; chain: string; kind: 'trade' | 'flatten' | 'fee'; net: number; note?: string }
+export type Entry = { ts: number; chain: string; kind: 'trade' | 'flatten' | 'fee' | 'yield' | 'reward'; net: number; note?: string }
 
 export class Ledger {
   private file = `${DATA_DIR}/ledger.jsonl`

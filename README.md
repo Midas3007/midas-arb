@@ -26,6 +26,10 @@ fast doesn't matter here, and small capital is enough to take what is there.
 
 - **Chains:** Celo, Base, BSC, Polygon, Arbitrum, Optimism, Avalanche, Gnosis, Sei. A chain trades only while a
   swap costs under $0.01 (`MAX_SWAP_GAS_USD`).
+- **Exchanges:** Uniswap v3 (and Pancake, Sushi, DragonSwap) everywhere; **Aerodrome** on Base and **Velodrome** on
+  Optimism (both their concentrated and classic stable/volatile pools); **Curve** on every chain (pools found
+  through Curve's API, meta pools traded through their underlying coins); **Mento** and **Textile** on Celo.
+  Pools that pair a coin with another dollar coin are reached in one hop through the cheapest exchange.
 - **Coins:** a hand-checked list of official addresses per chain (`src/hunter/chains.ts`): EURC, EURe, EURS, EURI,
   cNGN, BRZ, wBRL, wARS, IDRX, TRYB, XSGD, CADC, ZARP, MXNe, jCHF, jGBP, GBPe, Mento's KESm, GHSm, XOFm, NGNm...
   and other dollar coins (they depeg too). Every address is checked on-chain at startup (its symbol must match), so
@@ -60,6 +64,24 @@ fast doesn't matter here, and small capital is enough to take what is there.
 
 `/chain base live|watch|off` on Telegram sets a chain by hand; `/chain base auto` hands it back to the rules.
 `HUNTER_START_LIVE=celo` skips the watch period for chosen chains.
+
+## Other income
+
+Trading gaps is not the only income:
+
+- **Interest on idle cash.** Cash mostly waits for a gap. Each treasury round parks everything above the chain's
+  trading buffer (1.25x its largest trade) in **Aave v3**, where the cash token earned 7.1% on Base, 7.5% on
+  Avalanche and 5.7% on Optimism in Oct 2026 (chains under `SAVINGS_MIN_APY`, 1%, are skipped). Parked cash
+  still counts for trade sizes: when a trade needs it, the desk takes it out first in the same step (that gas is
+  booked against the trade). Interest is booked as profit, so sweeps include it. `SAVINGS=0` turns it off.
+  Aave is large and long-running but not risk-free, and a fully borrowed market can delay a withdrawal (the
+  trade is then skipped).
+- **Reward tokens.** Most incentive programs (Aave and pool incentives, swap rewards) pay through Merkl. Once an
+  hour the treasury checks what the wallet may claim on each chain and, once it's worth $1 (`REWARDS_MIN_USD`),
+  claims it, books it as profit and swaps non-cash reward tokens to cash.
+
+Not included on purpose: liquidations (professional, flash-loan-heavy competition; see Crumbs' Kamino report) and
+providing liquidity (a different, riskier business).
 
 ## Money: deposits, gas, splitting, sweeping
 
@@ -104,7 +126,8 @@ earned, which routes, and how long gaps stayed open. To trade:
 2. Set `HUNTER_LIVE=1` and `SWEEP_TO=` your withdrawal address in `.env`, then `npm start` again.
 3. Chains that earned their place in watch mode trade; the treasury moves cash to them.
 
-Stop with `CTRL`+`c`: a chain in the middle of a trade finishes it first.
+Stop with `CTRL`+`c`: it stops at once. Only if a transaction is being sent at that moment (a trade's legs, a
+bridge, an Aave deposit) does it wait for that, and `CTRL`+`c` again forces it.
 **Updates:** `git pull && npm install`, then start again.
 
 ### Moving to Render later
@@ -143,7 +166,7 @@ failed second legs.
 | `npm run report` | what each chain saw and earned (`-- 7` for a week) |
 | `npm run treasury` | one treasury round, plan only (`-- --go` to do it) |
 | `npm run withdraw` | sweep now, plan only (`-- --go` to do it) |
-| `npm test` / `npm run typecheck` | 35 tests: engine, peg guards, fair price, lifecycle, splitting, sweeping |
+| `npm test` / `npm run typecheck` | 38 tests: engine, peg guards, fair price, lifecycle, splitting, sweeping, parking, rewards |
 
 ## Files
 
@@ -159,7 +182,6 @@ failed second legs.
 - On the free public RPCs most chains finish a scan in seconds, but Polygon and Arbitrum (the most pools) take
   1-2 minutes per scan. Gaps here last minutes, so that works, but a free Alchemy/Ankr key in `POLYGON_RPCS=` /
   `ARBITRUM_RPCS=` makes them much faster. `RPC_CONCURRENCY` (default 8) is how many quotes each chain runs at once.
-- Gnosis has no usable Uniswap pools for its stablecoins (they trade on Curve and Balancer), so it finds no
-  routes for now; it costs nothing to keep watching.
+- Not covered yet: Balancer (Gnosis), LFJ (Avalanche), Uniswap v4 pools, Thena/other Algebra exchanges (BSC).
 - Each trade is two transactions. A one-transaction contract (no leftovers possible) is planned for chains that
   prove profitable (see `docs/PEG_HUNTER_PLAN.md`).

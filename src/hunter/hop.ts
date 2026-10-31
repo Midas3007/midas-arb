@@ -10,15 +10,16 @@ export function hopVenue(inner: HopVenue, hub: string, hubVenue: Venue, o: {
   balanceOf: (t: string) => Promise<bigint>
   received: (t: string, before: bigint, hash: `0x${string}`) => Promise<bigint>
   slippageBps?: bigint
+  name?: string // default: the inner exchange's name
 }): HopVenue {
   const slip = o.slippageBps ?? 30n
   const direct = (tin: string, tout: string) => tin !== 'USDT' && tout !== 'USDT'
   return {
-    name: inner.name,
+    name: o.name ?? inner.name,
     gas: inner.gas + hubVenue.gas,
     pools: inner.pools,
-    addrs: inner.addrs,
-    discover: (tokens) => inner.discover(tokens),
+    addrs: o.name ? new Map() : inner.addrs, // a named hop shares the inner exchange: it is watched once
+    discover: (tokens) => (o.name ? Promise.resolve(0) : inner.discover(tokens)), // ...and discovered once
     async quote(tin, tout, amt) {
       if (direct(tin, tout) || tin === hub || tout === hub) return null // cash <-> hub itself is the hub venue's job
       if (tin === 'USDT') { const h = await hubVenue.quote('USDT', hub, amt); return h ? inner.quote(hub, tout, h) : null }
@@ -33,6 +34,27 @@ export function hopVenue(inner: HopVenue, hub: string, hubVenue: Venue, o: {
       const h1 = await first.swap(tin, hub, amt, (q * (10_000n - slip)) / 10_000n)
       const got = await o.received(hub, before, h1)
       return second.swap(hub, tout, got, minOut)
+    },
+  }
+}
+
+// Several exchanges as one: quotes ask all of them, a swap goes through whichever quotes best right then.
+// Used as the cash <-> hub step of a hop, so it always takes the cheapest way there.
+export function bestOf(name: string, venues: () => Venue[]): Venue {
+  async function pick(tin: string, tout: string, amt: bigint) {
+    const qs = await Promise.all(venues().map(async (v) => ({ v, out: await v.quote(tin, tout, amt).catch(() => null) })))
+    let b: { v: Venue; out: bigint } | null = null
+    for (const q of qs) if (q.out && (!b || q.out > b.out)) b = { v: q.v, out: q.out }
+    return b
+  }
+  return {
+    name,
+    get gas() { return Math.max(0, ...venues().map((v) => v.gas)) },
+    async quote(tin, tout, amt) { return (await pick(tin, tout, amt))?.out ?? null },
+    async swap(tin, tout, amt, minOut) {
+      const b = await pick(tin, tout, amt)
+      if (!b) throw new Error(`no route ${tin} -> ${tout}`)
+      return b.v.swap(tin, tout, amt, minOut)
     },
   }
 }

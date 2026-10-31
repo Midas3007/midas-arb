@@ -17,10 +17,14 @@ import 'dotenv/config'
 import { encodeFunctionData, erc20Abi, formatUnits, parseUnits, type Address } from 'viem'
 import { notify } from '../notify.js'
 import { CHAINS, chainKeys, type ChainProfile } from './chains.js'
-import { clientsFor, hunterAccount, type ChainClients } from './clients.js'
+import { clientsFor, hunterAccount, sendTx, type ChainClients } from './clients.js'
 import { balances } from './desk.js'
 import { lifiExecute, lifiPrice, lifiQuote, NATIVE } from './lifi.js'
 import { localSwap } from './localswap.js'
+import { inflight } from './inflight.js'
+import { aaveInfo, aaveSupply, aaveWithdraw, parkedUnits, parkPlan, SAVINGS_MIN_APY } from './savings.js'
+import { claimAll, claimable, worthClaiming } from './rewards.js'
+import { maxTradeUsd } from './peg.js'
 import { allocate, planSweep, LIFECYCLE } from './policy.js'
 import { Ledger, Locks, Store } from './store.js'
 
@@ -29,10 +33,13 @@ const MIN_MOVE_USD = n('SPLIT_MIN_MOVE_USD', '5')
 const MAX_FEE_PCT = n('SPLIT_MAX_FEE_PCT', '2')
 const GAS_TOPUP_USD = n('GAS_TOPUP_USD', '1')
 const DEPOSIT_MIN_USD = n('DEPOSIT_MIN_USD', '2') // gas-token deposits smaller than this stay as gas
+const SAVINGS_MIN_MOVE_USD = n('SAVINGS_MIN_MOVE_USD', '5') // smaller amounts are not worth the gas of parking
+const REWARDS_MIN_USD = n('REWARDS_MIN_USD', '1')
+const REWARDS_EVERY_MS = n('REWARDS_MIN', '60') * 60_000
 const errMsg = (e: any) => String(e?.shortMessage ?? e?.message ?? e).split('\n')[0]
 
 export type TreasuryCtx = { store: Store; ledger: Ledger; locks: Locks; chains: ChainProfile[]; say?: (s: string) => void }
-type Side = { c: ChainClients; p: ChainProfile; cashUsd: number; tradable: number; gasNative: bigint; gasOk: boolean; nativeUsd: number; cashDec: number }
+type Side = { c: ChainClients; p: ChainProfile; cashUsd: number; liquid: number; parked: number; apyPct: number; tradable: number; gasNative: bigint; gasOk: boolean; nativeUsd: number; cashDec: number }
 
 const gasToken = (p: ChainProfile) => p.lifiNative ?? NATIVE
 
@@ -40,7 +47,8 @@ export async function treasuryRound(ctx: TreasuryCtx, opts: { go: boolean; force
   const say = ctx.say ?? ((s: string) => console.log(s))
   const { store, ledger, locks } = ctx
   const S = store.state
-  const lock = (key: string) => <T>(f: () => Promise<T>) => locks.run(key, f)
+  // One action per chain at a time, and counted as in flight so Ctrl+C waits for it.
+  const lock = (key: string) => <T>(f: () => Promise<T>) => locks.run(key, () => inflight.run(f))
   const me = hunterAccount().address
 
   // ---- balances ----
@@ -49,14 +57,42 @@ export async function treasuryRound(ctx: TreasuryCtx, opts: { go: boolean; force
     try {
       const b = await balances(p)
       const nativeUsd = p.native === 'USDT' ? 1 : await lifiPrice(p.chain.id, gasToken(p))
-      sides.push({ c: clientsFor(p), p, cashUsd: b.cashUsd, tradable: Math.max(0, b.cashUsd - (S.reserved[p.key] ?? 0)), gasNative: b.gas, gasOk: b.gasOk, nativeUsd, cashDec: b.cashDecimals })
+      const c = clientsFor(p), sav = await aaveInfo(c).catch(() => null)
+      const parked = sav ? Number(formatUnits(await parkedUnits(c), b.cashDecimals)) : 0
+      sides.push({ c, p, cashUsd: b.cashUsd, liquid: b.cashUsd, parked, apyPct: sav?.apyPct ?? 0, tradable: Math.max(0, b.cashUsd + parked - (S.reserved[p.key] ?? 0)), gasNative: b.gas, gasOk: b.gasOk, nativeUsd, cashDec: b.cashDecimals })
     } catch (e) { say(`  ${p.key}: balances unreadable (${errMsg(e)}); skipped this round`) }
   }
   const total = sides.reduce((a, s) => a + s.tradable, 0)
   say(`\n[treasury ${new Date().toISOString()}] wallet ${me}  tradable cash $${total.toFixed(2)}${opts.go ? '' : '  (plan only)'}`)
   for (const s of sides) {
     const gasUsd = Number(formatUnits(s.gasNative, 18)) * s.nativeUsd
-    say(`  ${s.p.key.padEnd(10)} ${S.chains[s.p.key]?.mode.padEnd(6)} ${s.p.cashName} $${s.tradable.toFixed(2).padStart(8)}${S.reserved[s.p.key] ? ` (+$${S.reserved[s.p.key].toFixed(2)} set aside)` : ''}   gas $${gasUsd.toFixed(2)}${s.gasOk ? '' : ' (needs gas)'}`)
+    say(`  ${s.p.key.padEnd(10)} ${S.chains[s.p.key]?.mode.padEnd(6)} ${s.p.cashName} $${s.tradable.toFixed(2).padStart(8)}${s.parked > 0.005 ? ` (of which $${s.parked.toFixed(2)} in Aave at ${s.apyPct.toFixed(2)}%)` : ''}${S.reserved[s.p.key] ? ` (+$${S.reserved[s.p.key].toFixed(2)} set aside)` : ''}   gas $${gasUsd.toFixed(2)}${s.gasOk ? '' : ' (needs gas)'}`)
+  }
+
+  // ---- 0. interest earned in Aave since last round: booked as profit ----
+  for (const s of sides) {
+    const principal = S.parked[s.p.key] ?? 0
+    if (s.parked <= 0.005) { if (principal && opts.go) { S.parked[s.p.key] = 0; store.save() } continue }
+    if (principal <= 0) { if (opts.go) { S.parked[s.p.key] = s.parked; store.save() } continue } // first sight: nothing to book yet
+    const earned = s.parked - principal
+    if (earned >= 0.0001 && opts.go) {
+      ledger.add({ chain: s.p.key, kind: 'yield', net: earned, note: `Aave interest at ${s.apyPct.toFixed(2)}%` })
+      S.parked[s.p.key] = s.parked
+      store.save()
+    }
+  }
+
+  // Cash parked in Aave comes out (under the chain's lock) before anything spends it.
+  async function ensureLiquid(s: Side, usd: number) {
+    if (s.liquid >= usd || s.parked <= 0) return
+    const take = Math.min(s.parked, usd - s.liquid + 0.01)
+    say(`  ${s.p.key}: taking $${take.toFixed(2)} out of Aave first`)
+    if (!opts.go) return
+    const units = take >= s.parked - 0.005 ? 2n ** 256n - 1n : parseUnits(take.toFixed(Math.min(6, s.cashDec)), s.cashDec) // all = max
+    await lock(s.p.key)(() => aaveWithdraw(s.c, units, (to, data) => sendTx(s.c, to, data)))
+    s.liquid += take; s.parked -= take
+    S.parked[s.p.key] = Math.max(0, (S.parked[s.p.key] ?? 0) - take)
+    store.save()
   }
 
   // A transfer through LI.FI: quote, fee check, send (under the source chain's lock), book the fee.
@@ -72,6 +108,7 @@ export async function treasuryRound(ctx: TreasuryCtx, opts: { go: boolean; force
     }
     say(`  ${label}: $${usd.toFixed(2)} ${from.p.key} -> ${toP.key} via ${q.tool}, arrives ~$${q.outUsd.toFixed(2)} (cost ~$${q.feeUsd.toFixed(2)}${from.p.key === toP.key ? '' : `, ~${q.minutes} min`})`)
     if (feeCheck && q.feeUsd > (usd * MAX_FEE_PCT) / 100) { say(`    skipped: costs more than ${MAX_FEE_PCT}% (SPLIT_MAX_FEE_PCT)`); return null }
+    if (fromToken === from.p.tokens.USDT.address) await ensureLiquid(from, usd)
     if (!opts.go) return null
     await lifiExecute(from.c, to, q, fromToken, amount, say, lock(from.p.key))
     if (q.feeUsd > 0) ledger.add({ chain: from.p.key, kind: 'fee', net: -q.feeUsd, note: label })
@@ -145,10 +182,8 @@ export async function treasuryRound(ctx: TreasuryCtx, opts: { go: boolean; force
           if (!keepHere) {
             say(`  sweep ${it.key}: send $${it.usd.toFixed(2)} ${dest.cashName} to ${sweepTo}`)
             if (!opts.go) continue
-            await lock(it.key)(async () => {
-              const h = await s.c.wallet.sendTransaction({ account: s.c.account, chain: s.p.chain, to: s.p.tokens.USDT.address, data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [sweepTo, cashUnits(s, it.usd)] }) })
-              await s.c.pub.waitForTransactionReceipt({ hash: h })
-            })
+            await ensureLiquid(s, it.usd)
+            await lock(it.key)(() => sendTx(s.c, s.p.tokens.USDT.address, encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [sweepTo, cashUnits(s, it.usd)] })))
           } else { say(`  sweep ${it.key}: set $${it.usd.toFixed(2)} aside on ${it.key} for withdrawal`); if (!opts.go) continue }
         } else {
           const q = await move(s, dest, s.p.tokens.USDT.address, toToken, cashUnits(s, it.usd), it.usd, `sweep ${it.key}`, sweepTo)
@@ -164,8 +199,46 @@ export async function treasuryRound(ctx: TreasuryCtx, opts: { go: boolean; force
       } catch (e) { say(`    sweep ${it.key} failed: ${errMsg(e)}`) }
     }
   }
+  // ---- 5. park idle cash in Aave (other income 1) ----
+  for (const s of sides) {
+    const info = await aaveInfo(s.c).catch(() => null)
+    if (!info) continue
+    const keep = maxTradeUsd(s.tradable) * 1.25 + (S.reserved[s.p.key] ?? 0) // the trading buffer stays liquid
+    const plan = parkPlan(s.liquid, s.parked, keep, SAVINGS_MIN_MOVE_USD)
+    if (!plan) continue
+    if (plan.action === 'deposit' && info.apyPct < SAVINGS_MIN_APY) continue
+    say(`  ${s.p.key}: ${plan.action === 'deposit' ? `park $${plan.usd.toFixed(2)} in Aave at ${info.apyPct.toFixed(2)}%` : `take $${plan.usd.toFixed(2)} out of Aave to refill the trading buffer`}`)
+    if (!opts.go) continue
+    try {
+      if (plan.action === 'deposit') {
+        await lock(s.p.key)(() => aaveSupply(s.c, cashUnits(s, plan.usd), (to, data) => sendTx(s.c, to, data)))
+        S.parked[s.p.key] = (S.parked[s.p.key] ?? 0) + plan.usd
+        store.save()
+      } else await ensureLiquid(s, s.liquid + plan.usd)
+    } catch (e) { say(`    Aave ${plan.action} failed: ${errMsg(e)}`) }
+  }
+
+  // ---- 6. claim reward tokens (other income 2), once an hour ----
+  if (Date.now() - lastRewardsAt > REWARDS_EVERY_MS) {
+    lastRewardsAt = Date.now()
+    for (const s of sides) {
+      try {
+        const items = await claimable(s.p.chain.id, me)
+        if (!items.length) continue
+        const usd = items.reduce((a, i) => a + i.usd, 0)
+        say(`  ${s.p.key}: rewards to claim: ${items.map((i) => `${i.symbol} $${i.usd.toFixed(2)}`).join(', ')}`)
+        if (!worthClaiming(items, REWARDS_MIN_USD) || !opts.go) continue
+        await lock(s.p.key)(() => claimAll(s.c, items, (to, data) => sendTx(s.c, to, data)))
+        ledger.add({ chain: s.p.key, kind: 'reward', net: usd, note: `claimed ${items.map((i) => i.symbol).join(', ')}` })
+        notify(`${s.p.key}: claimed rewards worth $${usd.toFixed(2)} (${items.map((i) => i.symbol).join(', ')})`)
+        for (const i of items) if (i.token.toLowerCase() !== s.p.tokens.USDT.address.toLowerCase() && i.usd >= 1)
+          await move(s, s.p, i.token, s.p.tokens.USDT.address, i.unclaimed, i.usd, `reward ${i.symbol} -> ${s.p.cashName}`).catch((e) => say(`    swap failed: ${errMsg(e)}`))
+      } catch (e) { say(`  ${s.p.key}: rewards check failed (${errMsg(e)})`) }
+    }
+  }
   if (!opts.go) say('  (plan only: add --go to do it)')
 }
+let lastRewardsAt = 0
 
 // Releases money that was set aside for withdrawal after you have withdrawn it by hand (npm run withdraw -- --release 25).
 export function release(store: Store, chain: string, usd: number) {

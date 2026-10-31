@@ -13,6 +13,7 @@ import { arbitrum, avalanche, base, bsc, celo, gnosis, optimism, polygon, sei } 
 
 export type Dex = {
   name: string
+  kind?: 'v3' | 'slipstream' // slipstream (Aerodrome/Velodrome concentrated pools): pools are keyed by tick spacing, not fee
   factory: Address
   quoter: Address // QuoterV2: quoteExactInput
   router: Address
@@ -34,6 +35,9 @@ export type ChainProfile = {
   hubs: string[] // tokens a route may pass through
   tokens: Record<string, Token> // must include USDT (the cash token)
   pegs: Record<string, Peg> // currency-pegged stablecoins, checked on startup
+  solidly?: { name: string; router: Address; factory: Address }[] // Aerodrome/Velodrome classic stable + volatile pools
+  curve?: string // Curve's API name for the chain: its pools are found there
+  aave?: Address // Aave v3 Pool: idle cash earns interest here between trades
   mento?: { broker: Address; hub: string } // Celo: Mento, oracle-priced exchange; trades `hub` (USDm) for each currency
   textile?: { api: string; reactor: Address } // Celo: Textile FX, RFQ market makers quoting at real FX rates
   dexes: Dex[]
@@ -56,6 +60,10 @@ export const envDexes = (chainKey: string): Dex[] =>
 const peg = (address: string, ccy: string, ...expect: string[]): Peg => ({ address: address as Address, ccy, expect })
 const uniV3 = (factory: string, quoter: string, router: string, gas = 180_000): Dex => ({
   name: 'uniswap', factory: factory as Address, quoter: quoter as Address, router: router as Address, routerStyle: '02', fees: [100, 500, 3000, 10000], gas,
+})
+
+const slipstream = (name: string, factory: string, quoter: string, router: string): Dex => ({
+  name, kind: 'slipstream', factory: factory as Address, quoter: quoter as Address, router: router as Address, routerStyle: 'v1', fees: [1, 50, 100, 200, 2000], gas: 200_000,
 })
 
 export const CHAINS: Record<string, ChainProfile> = {
@@ -89,6 +97,7 @@ export const CHAINS: Record<string, ChainProfile> = {
     mento: { broker: (process.env.MENTO_BROKER ?? '0x777A8255cA72412f0d706dc03C9D1987306B4CaD') as Address, hub: 'USDm' },
     // docs.textilecredit.com/protocol/address-book (Celo 42220)
     textile: { api: process.env.TEXTILE_API ?? 'https://api.textilecredit.com', reactor: '0xa9AA0a64769cBed4d3B1Ceb4Df01CdE915C235b3' },
+    curve: 'celo', aave: '0x3E59A31363E2ad014dcbc521c4a0d5757d9f3402',
     dexes: [uniV3('0xAfE208a311B21f13EF87E33A90049fC17A7acDEc', '0x82825d0554fA07f7FC52Ab63c961F330fdEFa8E8', '0x5615CDAb10dc425a742d643d949a7F474C01abc4', 200_000)],
   },
   base: {
@@ -112,8 +121,11 @@ export const CHAINS: Record<string, ChainProfile> = {
       MXNe: peg('0x269caE7Dc59803e5C596c95756faEeBb6030E0aF', 'MXN', 'MXNE'),
       ...envPegs('base'),
     },
+    curve: 'base', aave: '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5',
+    solidly: [{ name: 'aerodrome-v2', router: '0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43', factory: '0x420DD381b31aEf6683db6B902084cB0FFECe40Da' }],
     dexes: [
       uniV3('0x33128a8fC17869897dcE68Ed026d694621f6FDfD', '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a', '0x2626664c2603336E57B271c5C0b26F421741e481'),
+      slipstream('aerodrome', '0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A', '0x254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0', '0xBE6D8f0d05cC4be24d5167a3eF062215bE6D18a5'),
       { name: 'pancake', factory: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', quoter: '0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997',
         router: '0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86', routerStyle: '02', fees: [100, 500, 2500, 10000], gas: 180_000 },
       { name: 'sushi', factory: '0xc35DADB65012eC5796536bD9864eD8773aBc74C4', quoter: '0xb1E835Dc2785b52265711e17fCCb0fd018226a6e',
@@ -139,6 +151,7 @@ export const CHAINS: Record<string, ChainProfile> = {
       EURI: peg('0x9d1A7A3191102e9F900Faa10540837ba84dCBAE7', 'EUR', 'EURI'),
       ...envPegs('bsc'),
     },
+    curve: 'bsc', aave: '0x6807dc923806fE8Fd134338EABCA509979a7e0cB',
     dexes: [
       { name: 'pancake', factory: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', quoter: '0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997',
         router: '0x13f4EA83D0bd40E75C8222255bc855a974568Dd4', routerStyle: '02', fees: [100, 500, 2500, 10000], gas: 180_000 },
@@ -170,6 +183,7 @@ export const CHAINS: Record<string, ChainProfile> = {
       cNGN: peg('0x52828daa48C1a9A06F37500882b42daf0bE04C3B', 'NGN', 'CNGN'),
       ...envPegs('polygon'),
     },
+    curve: 'polygon', aave: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
     dexes: [
       uniV3('0x1F98431c8aD98523631AE4a59f267346ea31F984', '0x61fFE014bA17989E743c5F6cB21bF9697530B21e', '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45'),
       { name: 'sushi', factory: '0x917933899c6a5F8E37F31E19f92CdBFF7e8FF0e2', quoter: '0xb1E835Dc2785b52265711e17fCCb0fd018226a6e',
@@ -192,6 +206,7 @@ export const CHAINS: Record<string, ChainProfile> = {
       EURe: peg('0x0c06cCF38114ddfc35e07427B9424adcca9F44F8', 'EUR', 'EURE'),
       ...envPegs('arbitrum'),
     },
+    curve: 'arbitrum', aave: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
     dexes: [
       uniV3('0x1F98431c8aD98523631AE4a59f267346ea31F984', '0x61fFE014bA17989E743c5F6cB21bF9697530B21e', '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45', 200_000),
       { name: 'pancake', factory: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', quoter: '0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997',
@@ -217,7 +232,12 @@ export const CHAINS: Record<string, ChainProfile> = {
       EURA: peg('0x9485aca5bbBE1667AD97c7fE7C4531a624C8b1ED', 'EUR', 'EURA', 'AGEUR'),
       ...envPegs('optimism'),
     },
-    dexes: [uniV3('0x1F98431c8aD98523631AE4a59f267346ea31F984', '0x61fFE014bA17989E743c5F6cB21bF9697530B21e', '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45')],
+    curve: 'optimism', aave: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
+    solidly: [{ name: 'velodrome-v2', router: '0xa062aE8A9c5e11aaA026fc2670B0D65cCc8B2858', factory: '0xF1046053aa5682b4F9a81b5481394DA16BE5FF5a' }],
+    dexes: [
+      uniV3('0x1F98431c8aD98523631AE4a59f267346ea31F984', '0x61fFE014bA17989E743c5F6cB21bF9697530B21e', '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45'),
+      slipstream('velodrome', '0xCc0bDDB707055e04e497aB22a59c2aF4391cd12F', '0x89D8218ed5fF1e46d8dcd33fb0bbeE3be1621466', '0x0792a633F0c19c351081CF4B211F68F79bCc9676'),
+    ],
   },
   avalanche: {
     key: 'avalanche', chain: avalanche,
@@ -234,6 +254,7 @@ export const CHAINS: Record<string, ChainProfile> = {
       EURC: peg('0xC891EB4cbdEFf6e073e859e987815Ed1505c2ACD', 'EUR', 'EURC'),
       ...envPegs('avalanche'),
     },
+    curve: 'avalanche', aave: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
     dexes: [uniV3('0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD', '0xbe0F5544EC67e9B3b2D979aaA43f18Fd87E6257F', '0xbb00FF08d01D300023C629E8fFfFcb65A5a578cE')],
   },
   gnosis: {
@@ -251,6 +272,7 @@ export const CHAINS: Record<string, ChainProfile> = {
       GBPe: peg('0x8E34bfEC4f6Eb781f9743D9b4af99CD23F9b7053', 'GBP', 'GBPE'),
       ...envPegs('gnosis'),
     },
+    curve: 'xdai', aave: '0xb50201558B00496A145fE76f7424749556E326D8',
     dexes: [uniV3('0xe32F7dD7e3f098D518ff19A22d5f028e076489B1', '0x7E9cB3499A6cee3baBe5c8a3D328EA7FD36578f4', '0xc6D25285D5C5b62b7ca26D6092751A145D50e9Be')],
   },
   sei: {

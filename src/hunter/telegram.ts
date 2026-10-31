@@ -23,16 +23,19 @@ const money = (x: number) => `${x >= 0 ? '+' : '-'}$${Math.abs(x).toFixed(x !== 
 export function statusText(ctx: Ctx, keys: string[]): string {
   const S = ctx.store.state, L = ctx.ledger, now = Date.now(), week = now - LIFECYCLE.reviewDays * 86_400_000
   const total = keys.reduce((a, k) => a + L.cum(k), 0)
+  const byKind = (kinds: string[]) => L.entries.reduce((a, e) => a + (kinds.includes(e.kind) && keys.includes(e.chain) ? e.net : 0), 0)
   const unswept = keys.reduce((a, k) => a + Math.max(0, L.cum(k) - (S.marks[k] ?? 0)), 0)
   const lines = [
     `Peg Hunter ${ctx.live ? 'LIVE' : 'WATCH ONLY'}${S.paused ? ' (PAUSED)' : ''}`,
     `profit all time ${money(total)}, today ${money(L.today(null))}; not yet swept ${money(unswept)}, swept $${S.sweptUsd.toFixed(2)}`,
+    `from: trades ${money(byKind(['trade', 'flatten']))}, Aave interest ${money(byKind(['yield']))}, rewards ${money(byKind(['reward']))}, fees ${money(byKind(['fee']))}`,
   ]
   for (const k of keys) {
     const c = S.chains[k], st = ctx.status.get(k)
     const days = ((now - c.since) / 86_400_000).toFixed(1)
     const res = c.mode === 'watch' ? `seen ${c.watchOpps} gaps worth $${c.watchUsd.toFixed(2)}` : `7d ${money(L.since(k, week))}, today ${money(L.today(k))}`
-    lines.push(`${k}: ${c.mode}${c.manual ? '*' : ''} ${days}d | $${(st?.cashUsd ?? 0).toFixed(2)} | ${res}${st?.error ? ` | ${st.error}` : ''}`)
+    const aave = st && st.parkedUsd > 0.005 ? ` ($${st.parkedUsd.toFixed(2)} earning ${st.apyPct.toFixed(1)}%)` : ''
+    lines.push(`${k}: ${c.mode}${c.manual ? '*' : ''} ${days}d | $${(st?.cashUsd ?? 0).toFixed(2)}${aave} | ${res}${st?.error ? ` | ${st.error}` : ''}`)
   }
   lines.push('(* = set by hand)')
   return lines.join('\n')
