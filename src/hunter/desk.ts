@@ -45,7 +45,11 @@ export type Ctx = {
 }
 
 const n = (k: string, d: string) => Number(process.env[k] ?? d)
-const MIN_TRADE_USD = n('MIN_TRADE_USD', '0.5')
+// Size search: every route is tested from MIN_TRADE_USD ($50) up to the largest allowed trade ($200 cap) and the most
+// profitable size is kept. A chain holding less than $50 searches what it has (never under $2).
+const MIN_TRADE_USD = n('MIN_TRADE_USD', '50')
+const FLOOR_USD = 2
+const PROBE_USD = n('PROBE_USD', String(MIN_TRADE_USD)) // first test of each route (the low end of the range)
 const WATCH_CAPITAL_USD = n('WATCH_CAPITAL_USD', process.env.WATCH_SIZE_USD ?? '218') // watch mode: size trades as if the chain held this much
 const INTERVAL_MS = n('INTERVAL_SEC', '20') * 1000
 const MAX_DAILY_LOSS_USD = n('MAX_DAILY_LOSS_USD', '3') // per chain
@@ -486,7 +490,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   }
 
   // ---------- fair price and the peg guards ----------
-  const probeUsd = BigInt(Math.round(MIN_TRADE_USD * 1e6))
+  const probeUsd = BigInt(Math.round(PROBE_USD * 1e6)) // also the size used to read each pool's price
   // A venue's deviation from fair for coin X, from a tiny round trip through it. Recorded on the peg board.
   async function venueDev(v: Venue, X: string, fair: number): Promise<number | null> {
     const t = await v.quote('USDT', X, probeUsd)
@@ -586,13 +590,16 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     // Size grows with the chain's cash. Watch mode sizes as if the chain held WATCH_CAPITAL_USD (your real capital),
     // so what it records is what that money would actually have earned. The size search picks the best size.
     const sizeUsd = tradeLive ? maxTradeUsd(cashUsd) : maxTradeUsd(Math.max(cashUsd, WATCH_CAPITAL_USD))
-    const maxSize = parseUnits(sizeUsd.toFixed(6), 6), minSize = probeUsd
+    const maxSize = parseUnits(sizeUsd.toFixed(6), 6)
+    const minUsd = Math.max(FLOOR_USD, Math.min(MIN_TRADE_USD, sizeUsd))
+    const minSize = BigInt(Math.round(minUsd * 1e6))
+    const testSize = probeUsd < maxSize ? (probeUsd > minSize ? probeUsd : minSize) : maxSize
     if (tradeLive && maxSize < minSize) { status.lastLine = `not enough ${p.cashName} to trade (have $${cashUsd.toFixed(2)})`; if (!focus) say(`  ${status.lastLine}`); return }
     const gas = new Map<string, number>()
     for (const r of live) gas.set(routeKey(r), await gasUsd(r.buy.gas + r.sell.gas))
     // Many routes (Robinhood has 1,000+): estimate them all from one buy and one sell quote per pool and coin first.
-    const candidates = live.length > PREFILTER_FROM ? await prefilterRoutes(live, minSize) : live
-    const opps = await scanRoutes(candidates, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0, MAX_EXIT_IMPACT_BPS)
+    const candidates = live.length > PREFILTER_FROM ? await prefilterRoutes(live, testSize) : live
+    const opps = await scanRoutes(candidates, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0, MAX_EXIT_IMPACT_BPS, testSize)
     status.lastScanAt = Date.now()
     // Check the best candidates against the peg guards; the first that passes is the trade.
     let chosen: { o: Opp; buyDev: number | null; sellDev: number | null } | null = null

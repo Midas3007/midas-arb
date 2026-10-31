@@ -121,7 +121,7 @@ export function blockReason(o: {
 // The size search then picks the most profitable size up to that. A round trip takes seconds and its second leg
 // never sells below cost, so most of the cash can be used. Never more than 90% of the cash.
 export function maxTradeUsd(cashUsd: number, o = {
-  pct: Number(process.env.TRADE_PCT ?? '90'), cap: Number(process.env.MAX_TRADE_USD_CAP ?? '100'), floor: Number(process.env.FLOOR_TRADE_USD ?? '2'),
+  pct: Number(process.env.TRADE_PCT ?? '90'), cap: Number(process.env.MAX_TRADE_USD_CAP ?? '200'), floor: Number(process.env.FLOOR_TRADE_USD ?? '2'),
 }): number {
   if (cashUsd <= 0) return 0
   const byPct = (cashUsd * o.pct) / 100

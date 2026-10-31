@@ -103,9 +103,13 @@ export async function prefilterRoutes(routes: Route[], probe: bigint): Promise<R
   return keep
 }
 
-export async function scanRoutes(routes: Route[], minSize: bigint, maxSize: bigint, gasUsdFor: (r: Route) => number, maxExitImpactBps = Infinity): Promise<Opp[]> {
+// maxExitImpactBps: sizes that move the exit pool's price more than this are not considered (see exitImpactBps).
+// probeSize: the size each route is first tested at (default minSize). A realistic size ($10) avoids rounding and
+// fixed-fee effects that make tiny test trades look worse than real ones.
+export async function scanRoutes(routes: Route[], minSize: bigint, maxSize: bigint, gasUsdFor: (r: Route) => number, maxExitImpactBps = Infinity, probeSize?: bigint): Promise<Opp[]> {
+  const testAt = probeSize && probeSize > minSize ? (probeSize < maxSize ? probeSize : maxSize) : minSize
   const found = await Promise.all(routes.map(async (r) => {
-    const probe = await evaluate(r, minSize, gasUsdFor(r)).catch(() => null)
+    const probe = await evaluate(r, testAt, gasUsdFor(r)).catch(() => null)
     if (!probe || probe.edge <= 0) return probe
     return bestSize(r, minSize, maxSize, gasUsdFor(r), maxExitImpactBps, probe).catch(() => probe)
   }))
