@@ -46,7 +46,7 @@ export type Ctx = {
 
 const n = (k: string, d: string) => Number(process.env[k] ?? d)
 const MIN_TRADE_USD = n('MIN_TRADE_USD', '0.5')
-const WATCH_SIZE_USD = n('WATCH_SIZE_USD', '20') // watch mode: search sizes as if the chain held this much
+const WATCH_CAPITAL_USD = n('WATCH_CAPITAL_USD', process.env.WATCH_SIZE_USD ?? '218') // watch mode: size trades as if the chain held this much
 const INTERVAL_MS = n('INTERVAL_SEC', '20') * 1000
 const MAX_DAILY_LOSS_USD = n('MAX_DAILY_LOSS_USD', '3') // per chain
 const GLOBAL_DAILY_LOSS_USD = n('GLOBAL_DAILY_LOSS_USD', '5') // all chains together
@@ -583,8 +583,9 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const liquidUsd = usd(fromRaw('USDT', liquidRaw)), parkedUsd = usd(fromRaw('USDT', parkedRaw))
     const cashUsd = Math.max(0, liquidUsd + parkedUsd - reserved) // parked cash counts: a trade pulls it out first
     status.cashUsd = cashUsd; status.parkedUsd = parkedUsd; status.apyPct = sav?.apyPct ?? 0
-    // Size grows with the chain's cash (TRADE_PCT of it). Watch mode sizes as if the chain held WATCH_SIZE_USD.
-    const sizeUsd = tradeLive ? maxTradeUsd(cashUsd) : maxTradeUsd(Math.max(cashUsd, WATCH_SIZE_USD))
+    // Size grows with the chain's cash. Watch mode sizes as if the chain held WATCH_CAPITAL_USD (your real capital),
+    // so what it records is what that money would actually have earned. The size search picks the best size.
+    const sizeUsd = tradeLive ? maxTradeUsd(cashUsd) : maxTradeUsd(Math.max(cashUsd, WATCH_CAPITAL_USD))
     const maxSize = parseUnits(sizeUsd.toFixed(6), 6), minSize = probeUsd
     if (tradeLive && maxSize < minSize) { status.lastLine = `not enough ${p.cashName} to trade (have $${cashUsd.toFixed(2)})`; if (!focus) say(`  ${status.lastLine}`); return }
     const gas = new Map<string, number>()

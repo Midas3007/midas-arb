@@ -121,8 +121,9 @@ The treasury runs every 10 minutes while `HUNTER_LIVE=1` (or by hand: `npm run t
    stays and keeps trading. A chain whose part is under $3 waits for the next sweep. `/withdraw` sweeps now.
    - If `SWEEP_TO` is empty, swept money stays in the bot wallet on BSC, **set aside** (never traded). After you
      withdraw it by hand, run `npm run withdraw -- --release 25` so the bot stops setting that $25 aside.
-5. **Trade size grows with the money:** each trade is at most 20% of that chain's cash (`TRADE_PCT`), at most
-   $100 (`MAX_TRADE_USD_CAP`). Small wallets may still trade $2.
+5. **Trade size grows with the money:** the size search picks the most profitable size up to 90% of that chain's
+   cash (`TRADE_PCT`, as Kiyoshi), at most $100 (`MAX_TRADE_USD_CAP`). A trade must make at least $0.02 after gas
+   and fees (`MIN_NET_USD`, Kiyoshi's rule).
 
 ## Run it on Termux (Android)
 

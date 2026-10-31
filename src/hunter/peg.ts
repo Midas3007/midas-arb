@@ -17,8 +17,10 @@ export const RULES: PegRules = {
   depegPct: Number(process.env.DEPEG_PCT ?? '3'),
   suspiciousPct: Number(process.env.SUSPICIOUS_PCT ?? '20'),
   stuckHours: Number(process.env.STUCK_HOURS ?? '24'),
-  minGapPct: Number(process.env.MIN_GAP_PCT ?? '0.3'),
-  minNetUsd: Number(process.env.MIN_NET_USD ?? '0.01'),
+  // Kiyoshi's rule, which made money on these very pools: at least $0.02 after gas, whatever the percentage (its
+  // real gaps are often 0.03-0.3% of a $70 trade). MIN_GAP_PCT adds a percentage floor if wanted (off by default).
+  minGapPct: Number(process.env.MIN_GAP_PCT ?? '0'),
+  minNetUsd: Number(process.env.MIN_NET_USD ?? '0.02'),
   // Currencies whose free feeds give the official rate while crypto trades nearer the street rate: cNGN sits
   // ~2% and wARS ~7% from the official rate on every chain and at Textile. Wider depeg limits for them.
   depegByCcy: Object.fromEntries((process.env.DEPEG_PCT_CCY ?? 'NGN:5,ARS:12').split(',').filter(Boolean).map((x) => { const [c, v] = x.split(':'); return [c.trim().toUpperCase(), Number(v)] })),
@@ -115,10 +117,11 @@ export function blockReason(o: {
   return null
 }
 
-// Largest trade on a chain: TRADE_PCT (20%) of the chain's cash, never above MAX_TRADE_USD_CAP. A small wallet
-// may still trade up to FLOOR_TRADE_USD ($2) so it can trade at all, and never more than 90% of its cash.
+// Largest trade on a chain: TRADE_PCT (90%, like Kiyoshi) of the chain's cash, never above MAX_TRADE_USD_CAP ($100).
+// The size search then picks the most profitable size up to that. A round trip takes seconds and its second leg
+// never sells below cost, so most of the cash can be used. Never more than 90% of the cash.
 export function maxTradeUsd(cashUsd: number, o = {
-  pct: Number(process.env.TRADE_PCT ?? '20'), cap: Number(process.env.MAX_TRADE_USD_CAP ?? '100'), floor: Number(process.env.FLOOR_TRADE_USD ?? '2'),
+  pct: Number(process.env.TRADE_PCT ?? '90'), cap: Number(process.env.MAX_TRADE_USD_CAP ?? '100'), floor: Number(process.env.FLOOR_TRADE_USD ?? '2'),
 }): number {
   if (cashUsd <= 0) return 0
   const byPct = (cashUsd * o.pct) / 100
