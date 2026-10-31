@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/brand/peg-hunter-logo.png" alt="Peg Hunter" width="600"></p>
+
 # Midas-arb: Peg Hunter
 
 **A stablecoin pegged to a real currency has a known fair price: the real exchange rate.** A cNGN is worth
