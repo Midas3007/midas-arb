@@ -151,6 +151,22 @@ earned, which routes, and how long gaps stayed open. To trade:
 2. Set `HUNTER_LIVE=1` and `SWEEP_TO=` your withdrawal address in `.env`, then `npm start` again.
 3. Chains that earned their place in watch mode trade; the treasury moves cash to them.
 
+**Keep it running by itself:** `npm run forever` instead of `npm start` restarts Peg Hunter 10 seconds after any
+crash (Ctrl+C still stops it). RPC addresses that don't answer at startup (down, or out of credits like a used-up
+QuickNode trial) are skipped automatically, and a daily summary arrives on Telegram at 20:00 UTC
+(`DAILY_REPORT_UTC`).
+
+### Going live, safely
+
+1. Let the watch run (`npm run report`, `/status`). Chains that find gaps go live by themselves after 3 days; to start
+   one now: `HUNTER_START_LIVE=celo,base`.
+2. Fund only those chains: a little gas token, plus cash (or gas token, which is converted).
+3. **Test trade first:** `HUNTER_LIVE=1` and `TEST_TRADE=base` (one chain). On its first scan the bot makes one $2 round
+   trip on that chain's best route, profitable or not (it may cost a cent), and reports the result on Telegram. It
+   runs once (`data/<chain>/test-trade.done`); delete that file to run it again. This proves approvals, swaps, gas
+   accounting and the ledger on that chain before real-size trades.
+4. Then remove `TEST_TRADE` and let it trade. Raise `WATCH_CAPITAL_USD`/`MAX_TRADE_USD_CAP` as the money grows.
+
 Stop with `CTRL`+`c`: it stops at once. Only if a transaction is being sent at that moment (a trade's legs, a
 bridge, an Aave deposit) does it wait for that, and `CTRL`+`c` again forces it.
 **Updates:** `git pull && npm install`, then start again.

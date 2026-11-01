@@ -11,7 +11,8 @@
     "withdraw": "tsx src/hunter/treasury.ts --withdraw",
     "new-wallet": "tsx src/new-wallet.ts",
     "test": "tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "forever": "sh scripts/forever.sh"
   },
   "dependencies": {
     "@celo/attribution-tags": "0.5.0",

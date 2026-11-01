@@ -5,13 +5,13 @@
 import 'dotenv/config'
 import { notify } from '../notify.js'
 import { CHAINS, chainKeys } from './chains.js'
-import { hunterAccount } from './clients.js'
+import { hunterAccount, pruneRpcs } from './clients.js'
 import { runChain, type Ctx } from './desk.js'
 import { FairPrices } from './fair.js'
 import { PegBoard } from './peg.js'
 import { LIFECYCLE, nextState } from './policy.js'
 import { Ledger, Locks, Store } from './store.js'
-import { telegramLoop } from './telegram.js'
+import { statusText, telegramLoop } from './telegram.js'
 import { treasuryRound } from './treasury.js'
 import { inflight } from './inflight.js'
 
@@ -36,6 +36,8 @@ const ctx: Ctx = {
 }
 
 // Fair prices first (the desks need them), then keep them fresh.
+// Skip RPC addresses that don't answer before anything uses them.
+await Promise.all(keys.map((k) => pruneRpcs(CHAINS[k])))
 await ctx.fair.refresh()
 for (const e of ctx.fair.errors) console.log(`fair price source problem: ${e}`)
 ;(async () => { while (!stopping) { await sleep(60_000); await ctx.fair.refresh().catch(() => {}) } })()
@@ -70,10 +72,26 @@ if (live) (async () => {
 
 telegramLoop(ctx, keys).catch((e) => console.log(`telegram stopped: ${e?.message ?? e}`))
 
+// A stray error in one chain must not stop the others: log it and carry on.
+process.on('unhandledRejection', (e: any) => console.log(`(ignored) unexpected error: ${String(e?.shortMessage ?? e?.message ?? e).split('\n')[0]}`))
+
+// Daily summary on Telegram at DAILY_REPORT_UTC (default 20:00 UTC = 21:00 in Lagos), so there's no need to ask.
+;(async () => {
+  const hour = Number(process.env.DAILY_REPORT_UTC ?? '20')
+  let sentFor = ''
+  while (!stopping) {
+    await sleep(60_000)
+    const now = new Date(), day = now.toISOString().slice(0, 10)
+    if (now.getUTCHours() !== hour || sentFor === day) continue
+    sentFor = day
+    notify(`Daily report\n${statusText(ctx, keys)}`)
+  }
+})()
+
 // Ctrl+C: exits at once, unless a transaction is being sent right now (a trade's legs, a bridge, a deposit):
 // then it waits only for that. Ctrl+C again forces it (a half-finished trade is sold by the loss guard on restart).
 process.on('SIGINT', () => {
-  if (stopping) { console.log('forced stop'); process.exit(1) }
+  if (stopping) { console.log('forced stop'); process.exit(130) }
   stopping = true
   if (!inflight.n) { console.log('stopped'); process.exit(0) }
   console.log(`stopping: finishing ${inflight.n} transaction(s) in progress (Ctrl+C again to force)`)

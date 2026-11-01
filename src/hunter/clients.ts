@@ -25,6 +25,21 @@ export function hunterAccount(): PrivateKeyAccount {
   return acct
 }
 
+// Drop RPC addresses that don't answer (down, wrong, or out of credits like a used-up QuickNode trial), so a chain
+// isn't stuck on them. Called once per chain at startup; if none answer, all are kept and retried.
+export async function pruneRpcs(p: ChainProfile, say: (s: string) => void = console.log): Promise<void> {
+  const ok: string[] = []
+  await Promise.all(p.rpcs.map(async (u) => {
+    try {
+      const r = await fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] }), signal: AbortSignal.timeout(10_000) })
+      const j: any = await r.json()
+      if (r.ok && typeof j?.result === 'string') ok.push(u)
+      else say(`[${p.key}] RPC skipped (${j?.error?.message ?? `HTTP ${r.status}`}): ${u.replace(/\/[A-Za-z0-9]{16,}\/?$/, '/…')}`)
+    } catch (e: any) { say(`[${p.key}] RPC skipped (${String(e?.message ?? e).split('\n')[0]}): ${u.replace(/\/[A-Za-z0-9]{16,}\/?$/, '/…')}`) }
+  }))
+  if (ok.length) p.rpcs = p.rpcs.filter((u) => ok.includes(u)) // keep the order given in .env
+}
+
 const cache = new Map<string, ChainClients>()
 export function clientsFor(p: ChainProfile): ChainClients {
   const hit = cache.get(p.key)

@@ -621,6 +621,20 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const candidates = live.length > PREFILTER_FROM ? await prefilterRoutes(live, probeSizes(minSize, maxSize)) : live
     const opps = await scanRoutes(candidates, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0, MAX_EXIT_IMPACT_BPS)
     status.lastScanAt = Date.now()
+    // One-time live test (TEST_TRADE=<chain>, HUNTER_LIVE=1, chain funded): a $2 round trip on this chain's best route,
+    // profitable or not (it may cost a cent), so the first real trade is not the first time the trade code runs.
+    if (ctx.live && process.env.TEST_TRADE?.toLowerCase() === p.key && !existsSync(`${dir}/test-trade.done`) && opps[0] && opps[0].net > -0.05) {
+      const [t] = await scanRoutes([opps[0].route], 2_000_000n, 2_000_000n, (r) => gas.get(routeKey(r)) ?? 0)
+      if (t && usd(fromRaw('USDT', liquidRaw)) >= 2.2) {
+        say(`  TEST TRADE: ${routeName(t.route)} $2.00 (expected ${t.net >= 0 ? '+' : ''}${t.net.toFixed(4)} after gas)`)
+        writeFileSync(`${dir}/test-trade.done`, new Date().toISOString())
+        const net = await inflight.run(() => execute(t))
+        const msg = net === null ? 'did not complete; any leftover is sold by the loss guard (check the log)' : `done: ${net >= 0 ? '+' : ''}$${net.toFixed(4)} after gas. The trade path works on ${p.key}.`
+        say(`  TEST TRADE ${msg}`); notify(`${p.key} test trade ${msg}`)
+        return
+      }
+      say(`  TEST TRADE waiting: needs at least $2.20 of ${p.cashName} liquid on ${p.key}`)
+    }
     // Check the best candidates against the peg guards; the first that passes is the trade.
     let chosen: { o: Opp; buyDev: number | null; sellDev: number | null } | null = null
     const blocked: string[] = []
