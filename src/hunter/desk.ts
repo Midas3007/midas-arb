@@ -103,6 +103,18 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   const T = p.tokens
   const rpc = limiter(Number(process.env[`${p.key.toUpperCase()}_RPC_CONCURRENCY`] ?? process.env.RPC_CONCURRENCY ?? p.rpcConcurrency ?? 8)) // quotes in flight at once on this chain
   const st = () => ctx.store.state.chains[p.key]
+  // A chain that is off (/chain <name> off on Telegram, or paused by the rules) does nothing at all: no setup, no
+  // scans, no RPC calls, so the chains that are on get the phone's full speed. Switched back on, it starts up.
+  // (A chain with leftover coins from a half-finished trade still starts, so the loss guard can sell them.)
+  const isOff = () => st()?.mode === 'paused'
+  const offLine = `off: not scanning (/chain ${p.key} watch or live to turn it on)`
+  if (isOff() && !pending.tokens().length) {
+    status.lastLine = offLine
+    say(offLine)
+    while (isOff() && !ctx.stopping()) await sleep(5000)
+    if (ctx.stopping()) return
+    say('switched on: starting up')
+  }
   // The engine counts the cash token in 6 decimals ($1 = 1e6); cash tokens with other decimals are scaled here.
   const shift = () => T.USDT.decimals - 6
   const toRaw = (t: string, a: bigint) => (t !== 'USDT' ? a : shift() >= 0 ? a * 10n ** BigInt(shift()) : a / 10n ** BigInt(-shift()))
@@ -757,6 +769,20 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   const fullEveryNow = () => baseEvery * (quietScans >= 10 ? 3 : quietScans >= 5 ? 2 : 1)
   let focus: Set<string> | null = null, lastFull = 0, fullTook = 0
   while (!ctx.stopping()) {
+    if (isOff()) {
+      chaseX = null; chaseFor = null; focus = null
+      status.lastLine = offLine
+      say(offLine)
+      while (isOff() && !ctx.stopping()) {
+        // Leftover coins are still sold while off (live only); once there are none, the chain just sleeps.
+        if (ctx.live) await ctx.locks.run(p.key, () => flatten()).catch(() => {})
+        if (!holding) { while (isOff() && !ctx.stopping()) await sleep(5000); break }
+        await sleep(60_000)
+      }
+      if (ctx.stopping()) break
+      say('switched on: scanning again')
+      continue
+    }
     const wasFull = !focus
     if (wasFull) lastFull = Date.now()
     const chasing = chaseX

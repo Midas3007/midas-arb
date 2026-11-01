@@ -110,9 +110,12 @@ A gap is worth something only while it lasts, so most of the work is about looki
 |---|---|---|
 | **watch** | scans, records what it *would* have earned (sized as if it held `WATCH_CAPITAL_USD`, $218), trades nothing | after 3 days, if it saw at least 5 gaps worth $0.10 in total and gas is cheap: **live** |
 | **live** | trades (with `HUNTER_LIVE=1`) | no profit after gas over its last 7 days: **paused** |
-| **paused** | its cash moves to the live chains | after 7 days: **watch** again |
+| **paused** | its cash moves to the live chains; it does not scan at all | after 7 days: **watch** again |
 
 `/chain base live|watch|off` on Telegram sets a chain by hand; `/chain base auto` hands it back to the rules.
+A chain that is **off** does nothing at all (no scans, no RPC calls), so on a phone the chains that are on run
+faster. `/only base` switches every other chain off; `/chain sei watch` turns one back on, `/chain all auto` all of
+them. Leftover coins on a chain that is switched off are still sold.
 `HUNTER_START_LIVE=celo` skips the watch period for chosen chains on the first start; a chain that is already
 watching goes live with `/chain celo live`.
 
@@ -220,7 +223,8 @@ Send `/menu` (or `/start`) for the **command panel**: buttons that update the sa
 | 💸 Withdraw · `/withdraw` | sweep profit now (asks to confirm) |
 | ⏯ Pause / Resume · `/pause` `/resume` | stop / restart new trades |
 
-The commands also appear in Telegram's "/" menu. Typed `/chain base live` still works.
+The commands also appear in Telegram's "/" menu. Typed `/chain base live` still works, and so do `/only base`
+(every other chain off) and `/chain all watch|off|auto`.
 
 Alerts: start, trades of $1 or more, depeg freezes, new pools of our coins, chains promoted or paused, sweeps,
 failed second legs.
