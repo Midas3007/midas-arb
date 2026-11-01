@@ -78,11 +78,37 @@ idea applies with the stock price as the fair price:
 | Half-finished trade | coin left over after leg 1 | leg 2 never sells below leg 1's cost; leftovers sold by the loss guard (saved across restarts) |
 | Bad days | losses pile up | $3 per chain and $5 overall daily loss limits |
 
+## Scanning: where the speed comes from
+
+A gap is worth something only while it lasts, so most of the work is about looking at the right routes often:
+
+- **Estimate first, quote exactly second.** On chains with over 20 routes (`PREFILTER_FROM`), every route is first
+  estimated from one buy and one sell quote per pool and coin, at the full, half and quarter trade size. Only
+  routes that come close get exact quotes, and each one is quoted first at the size its estimate liked best; the
+  other sizes are tried only if it pays there.
+- **Junk routes are muted.** A route that loses over 5% at every size (an empty pool, a broken one, the wrong
+  direction of a big depeg) is skipped for an hour (`JUNK_PCT`, `JUNK_MUTE_MIN`), or until a new pool appears. On
+  Base that is about 240 of 740 routes.
+- **Chase mode (Kiyoshi's).** When a coin has a gap, only the route that pays (and up to 2 other paying routes of
+  that coin) is re-checked every 5 seconds (`CHASE_SEC`), and traded again while the gap lasts. After a winning
+  trade the next check comes 1 second later (`CHASE_AFTER_TRADE_SEC`). A re-check takes about 7 seconds on Base,
+  against about 2 minutes for a full scan. Full scans still run during a chase, but the chase gets at least 2/3 of
+  the time.
+- **Quiet chains scan less.** A chain whose best route stays more than 0.5% from profit (`QUIET_PCT`) scans 2x less
+  often after 5 such scans and 3x after 10; a trade in one of its pools still triggers an instant rescan.
+- **Fewer approvals.** Each approval covers 25 trades (`APPROVAL_MULT`), never an unlimited amount, so a chase does
+  not stop for an approval transaction every few trades.
+- **Gaps you're missing.** When a gap stays open for 30 minutes (`PERSIST_ALERT_MIN`) on a chain that isn't
+  trading it (watch mode, paused, or `HUNTER_LIVE=0`), Telegram tells you, at most once every 6 hours per coin.
+  Example: USDT.b Curve -> Aerodrome on Base paid about +$0.93 on $196 for hours.
+
+`SCAN_TIMING=1` prints how long each part of a scan took.
+
 ## Chain lifecycle
 
 | Mode | What happens | Moves on when |
 |---|---|---|
-| **watch** | scans, records what it *would* have earned (sized as if it held $20), trades nothing | after 3 days, if it saw at least 5 gaps worth $0.10 in total and gas is cheap: **live** |
+| **watch** | scans, records what it *would* have earned (sized as if it held `WATCH_CAPITAL_USD`, $218), trades nothing | after 3 days, if it saw at least 5 gaps worth $0.10 in total and gas is cheap: **live** |
 | **live** | trades (with `HUNTER_LIVE=1`) | no profit after gas over its last 7 days: **paused** |
 | **paused** | its cash moves to the live chains | after 7 days: **watch** again |
 
@@ -124,8 +150,8 @@ The treasury runs every 10 minutes while `HUNTER_LIVE=1` (or by hand: `npm run t
    - If `SWEEP_TO` is empty, swept money stays in the bot wallet on BSC, **set aside** (never traded). After you
      withdraw it by hand, run `npm run withdraw -- --release 25` so the bot stops setting that $25 aside.
 5. **Trade size grows with the money:** the size search picks the most profitable size up to 90% of that chain's
-   cash (`TRADE_PCT`, as Kiyoshi), at most $200 (`MAX_TRADE_USD_CAP`), testing each route from $50 (`MIN_TRADE_USD`) up. A trade must make at least $0.02 after gas
-   and fees (`MIN_NET_USD`, Kiyoshi's rule).
+   cash (`TRADE_PCT`, as Kiyoshi), at most $200 (`MAX_TRADE_USD_CAP`), testing each route from $50 (`MIN_TRADE_USD`) up. A trade must make at least $0.01 after gas
+   and fees (`MIN_NET_USD`; Kiyoshi asks $0.01 before gas).
 
 ## Run it on Termux (Android)
 

@@ -11,7 +11,7 @@ import {
   type Address, type Hex,
 } from 'viem'
 import { toDataSuffix } from '@celo/attribution-tags'
-import { buildRoutes, prefilterRoutes, probeSizes, routeKey, type Estimate, routeName, scanRoutes, shouldSell, tradingAllowed, usdOf, type Opp, type Route, type Venue } from '../engine.js'
+import { buildRoutes, prefilterRoutes, probeSizes, routeKey, type Estimate, type Route as RouteT, routeName, scanRoutes, shouldSell, tradingAllowed, usdOf, type Opp, type Route, type Venue } from '../engine.js'
 import { PendingStore } from '../pending.js'
 import { notify } from '../notify.js'
 import { PoolWatcher } from '../watch.js'
@@ -62,7 +62,13 @@ const NEWPOOL_MS = n('NEWPOOL_SEC', '60') * 1000
 const OBSERVE_MS = n('OBSERVE_SEC', '300') * 1000
 const CHASE_MS = n('CHASE_SEC', '5') * 1000 // chase mode: re-check a coin with a live gap this often...
 const CHASE_MAX_MS = n('CHASE_MAX_MIN', '10') * 60_000 // ...for at most this long
-const PREFILTER_FROM = n('PREFILTER_FROM', '60')
+const PREFILTER_FROM = n('PREFILTER_FROM', '20')
+const APPROVAL_MULT = n('APPROVAL_MULT', '25')
+const JUNK_PCT = n('JUNK_PCT', '5') // a route losing more than this at every test size is muted for a while...
+const JUNK_MUTE_MS = n('JUNK_MUTE_MIN', '60') * 60_000 // ...this long (or until a new pool / rediscovery)
+const QUIET_PCT = n('QUIET_PCT', '0.5') // a chain whose best route stays further than this from profit scans less often
+const CHASE_AFTER_TRADE_MS = n('CHASE_AFTER_TRADE_SEC', '1') * 1000 // live: re-check this soon after a winning trade
+const PERSIST_ALERT_MIN = n('PERSIST_ALERT_MIN', '30') // Telegram alert when a watch gap stays open this long
 const SHOW_COINS = n('SHOW_COINS', '8') // scan log: the best route of this many coins // chains with more routes than this are prefiltered
 const MAX_FLATTEN_LOSS_BPS = 50, MAX_HOLD_MS = 30 * 60_000, COOLDOWN_MS = 5 * 60_000, SLIPPAGE_BPS = 30n
 const MODE = process.argv.includes('--scan') ? 'scan' : process.argv.includes('--watch') ? 'watch' : (process.env.MODE ?? 'both')
@@ -129,7 +135,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     if (have >= need) return
     const approve = (amt: bigint) => send(T[t].address, encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [spender, amt] }))
     if (have > 0n) await approve(0n) // USDT-style tokens refuse a nonzero-to-nonzero change
-    await approve(need * 4n) // capped: 4 trades' worth, never unlimited
+    await approve(need * BigInt(APPROVAL_MULT)) // capped: APPROVAL_MULT (25) trades' worth, never unlimited; fewer approval txs while chasing
     for (let i = 0; i < 10; i++) {
       const now = await pub.readContract({ address: T[t].address, abi: erc20Abi, functionName: 'allowance', args: [account.address, spender] }).catch(() => 0n)
       if (now >= need) return
@@ -364,6 +370,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
 
   // ---------- discovery ----------
   let routes: Route[] = [], discoveredAt = 0
+  const muted = new Map<string, number>() // junk routes (near-empty or broken pools) -> skipped until this time
   async function discover() {
     // Mento first: it adds the currencies it lists (NGNm, ZARm...), and the other exchanges then look for their pools.
     const disc = (v: DexVenue) => v.discover(corridors()).catch((e) => { say(`${v.name} discovery: ${errMsg(e)}`); return 0 })
@@ -398,6 +405,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       routes.push(...r)
     }
     discoveredAt = Date.now()
+    muted.clear() // a fresh discovery (or a new pool) gives every route another chance
     const traded = new Set(routes.map((r) => r.X))
     status.routes = routes.length
     status.tokens = [...traded]
@@ -523,9 +531,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   }
   async function check(o: Opp): Promise<{ why: string | null; buyDev: number | null; sellDev: number | null }> {
     const X = o.route.X, f = ctx.fair.get(ccyOf(X))
-    const [buyDev, sellDev] = f.usdPer
-      ? await Promise.all([venueDev(o.route.buy, X, f.usdPer), venueDev(o.route.sell, X, f.usdPer)])
-      : [null, null]
+    const devs = f.usdPer ? Promise.all([venueDev(o.route.buy, X, f.usdPer), venueDev(o.route.sell, X, f.usdPer)]) : Promise.resolve([null, null] as const)
     // Sanity: buying and selling straight back on one exchange must not return more than went in (a real pool always
     // loses its fee on a round trip). One that "gains" is quoting wrongly, and any route through it is suspect.
     const roundTrip = async (v: Venue) => {
@@ -533,7 +539,9 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       const back = x ? await v.quote(X, 'USDT', x) : null
       return back !== null && back * 10_000n > o.size * 10_005n ? `${v.name} quotes a free round trip (${usd(o.size).toFixed(2)} -> ${usd(back).toFixed(2)}): broken quote` : null
     }
-    const broken = (await roundTrip(o.route.buy)) ?? (await roundTrip(o.route.sell))
+    const [rtBuy, rtSell] = await Promise.all([roundTrip(o.route.buy), roundTrip(o.route.sell)]) // all in parallel: a chase re-check stays fast
+    const [buyDev, sellDev] = await devs
+    const broken = rtBuy ?? rtSell
     if (broken) return { why: broken, buyDev, sellDev }
     const why = blockReason({
       fairOk: f.usdPer !== null, fairNote: f.note,
@@ -574,8 +582,19 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
 
   // ---------- watch mode bookkeeping ----------
   const seenOpp = new Map<string, number>() // route -> last 10-minute bucket counted
+  const openSince = new Map<string, { since: number; last: number }>() // route -> when its gap opened, last seen
+  const alertedAt = new Map<string, number>() // coin -> last persistent-gap alert
   function recordWatch(o: Opp, buyDev: number | null, sellDev: number | null) {
     log('opps.jsonl', { route: routeName(o.route), sizeUsd: usd(o.size), net: o.net, gapPct: (o.net / usd(o.size)) * 100, buyDev, sellDev, mode: st().mode })
+    // A gap that stays open is money left on the table: tell the owner (per coin, at most every 6 hours).
+    const k = routeKey(o.route), now = Date.now(), g = openSince.get(k)
+    const cur = g && now - g.last < 25 * 60_000 ? { since: g.since, last: now } : { since: now, last: now }
+    openSince.set(k, cur)
+    if (now - cur.since >= PERSIST_ALERT_MIN * 60_000 && now - (alertedAt.get(o.route.X) ?? 0) > 6 * 3_600_000) {
+      alertedAt.set(o.route.X, now)
+      const why = !ctx.live ? 'HUNTER_LIVE=0, so nothing trades' : st().mode !== 'live' ? `${p.key} is in ${st().mode} mode (/chain ${p.key} live to trade it)` : 'trading is paused'
+      notify(`${p.key}: gap open ${Math.round((now - cur.since) / 60_000)} min: ${routeName(o.route)}, +$${o.net.toFixed(2)} on $${usd(o.size).toFixed(0)} after gas (${((o.net / usd(o.size)) * 100).toFixed(2)}%). Not taken: ${why}.`)
+    }
     if (st().mode !== 'watch') return
     const bucket = Math.floor(Date.now() / 600_000)
     if (seenOpp.get(routeKey(o.route)) === bucket) return
@@ -588,17 +607,19 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   // ---------- one scan ----------
   // Chase mode (Kiyoshi's): after a gap is found, that coin is re-checked every CHASE_SEC (5 s) and traded again
   // until the gap closes (live), instead of waiting for the next full scan.
-  let chaseX: string | null = null, chaseSince = 0
+  let chaseX: string | null = null, chaseRoutes: string[] = [], chaseFor: string | null = null, chaseSince = 0, chaseFast = false, quietScans = 0
   async function cycle(focus: Set<string> | null = null) {
     const s = st()
     const tradeLive = ctx.live && s.mode === 'live' && !ctx.store.state.paused && process.env.HUNTER_PAUSED !== '1'
     if (focus && [...focus].some((t) => p.hubs.includes(t))) focus = null
+    const T0 = Date.now(), tm: string[] = [], lap = (k: string) => tm.push(`${k} ${((Date.now() - T0) / 1000).toFixed(1)}s`)
     if (ctx.live) await flatten()
     if (holding) { status.lastLine = 'holding leftover coins; no new trades until they are sold'; say(`  ${status.lastLine}`); return }
     if (!discoveredAt || Date.now() - discoveredAt > 6 * 3_600_000) await discover() // a chain with no routes waits too
     if (!focus && Date.now() - poolAt > NEWPOOL_MS && (await newPools().catch(() => false))) await discover()
     if (!focus && Date.now() - observedAt > OBSERVE_MS) await observeAll()
-    const live = routes.filter((r) => (cooldown.get(routeKey(r)) ?? 0) < Date.now() && (!focus || focus.has(r.X)))
+    lap('pre')
+    const live = routes.filter((r) => (cooldown.get(routeKey(r)) ?? 0) < Date.now() && (muted.get(routeKey(r)) ?? 0) < Date.now() && (!focus || focus.has(r.X) || focus.has(routeKey(r))))
     if (!live.length) { status.lastLine = routes.length ? 'all routes cooling down' : 'no routes on this chain (no exchange pairs our coins with the cash token)'; return }
     status.swapGasUsd = await gasUsd(180_000)
     status.gasOk = status.swapGasUsd <= MAX_SWAP_GAS_USD
@@ -615,13 +636,26 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const minUsd = Math.max(FLOOR_USD, Math.min(MIN_TRADE_USD, sizeUsd))
     const minSize = BigInt(Math.round(minUsd * 1e6))
     if (tradeLive && maxSize < minSize) { status.lastLine = `not enough ${p.cashName} to trade (have $${cashUsd.toFixed(2)})`; if (!focus) say(`  ${status.lastLine}`); return }
+    lap('bal')
     const gas = new Map<string, number>()
     for (const r of live) gas.set(routeKey(r), await gasUsd(r.buy.gas + r.sell.gas))
     // Many routes (Robinhood has 1,000+): estimate them all from one buy and one sell quote per pool and coin first.
     const estimates = new Map<string, Estimate>()
-    const candidates = live.length > PREFILTER_FROM ? await prefilterRoutes(live, probeSizes(minSize, maxSize), estimates) : live
-    const opps = await scanRoutes(candidates, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0, MAX_EXIT_IMPACT_BPS)
+    const bestRet = new Map<RouteT, number>(), bestAt = new Map<RouteT, bigint>() // best estimated return per route, and at which size
+    const candidates = live.length > PREFILTER_FROM
+      ? await prefilterRoutes(live, probeSizes(minSize, maxSize), estimates, (r, ret, probe) => {
+        if (ret > (bestRet.get(r) ?? -Infinity)) { bestRet.set(r, ret); bestAt.set(r, probe) }
+      })
+      : live
+    lap(`prefilter(${live.length}->${candidates.length})`)
+    // Junk: loses more than JUNK_PCT at every test size (an empty or broken pool, or the wrong direction of a big
+    // depeg). Skipped for JUNK_MUTE_MIN, so scans spend their quotes on routes that can pay.
+    let newlyMuted = 0
+    for (const [r, ret] of bestRet) if (ret < 1 - JUNK_PCT / 100) { muted.set(routeKey(r), Date.now() + JUNK_MUTE_MS); newlyMuted++ }
+    if (newlyMuted && !focus) say(`  muted ${newlyMuted} junk route(s) for ${JUNK_MUTE_MS / 60_000} min (they lose over ${JUNK_PCT}% at every size)`)
+    const opps = await scanRoutes(candidates, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0, MAX_EXIT_IMPACT_BPS, (r) => bestAt.get(r))
     status.lastScanAt = Date.now()
+    lap('exact')
     // One-time live test (TEST_TRADE=<chain>, HUNTER_LIVE=1, chain funded): a $2 round trip on this chain's best route,
     // profitable or not (it may cost a cent), so the first real trade is not the first time the trade code runs.
     if (ctx.live && process.env.TEST_TRADE?.toLowerCase() === p.key && !existsSync(`${dir}/test-trade.done`) && opps[0] && opps[0].net > -0.05) {
@@ -644,6 +678,8 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       if (!c.why) { chosen = { o, ...c }; break }
       blocked.push(`${routeName(o.route)}: ${c.why}`)
     }
+    lap('check')
+    if (process.env.SCAN_TIMING === '1') say(`  timing${focus ? ' (focus)' : ''}: ${tm.join(', ')}`)
     // One line per coin (its best route), like Kiyoshi's list, so each coin's state is visible every scan.
     if (!focus) {
       const bestPer = new Map<string, Opp>()
@@ -658,6 +694,11 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     }
     if (!focus) for (const b of blocked.slice(0, 2)) say(`  skip ${b}`)
     if (opps[0]) appendFileSync(`${dir}/scans.jsonl`, JSON.stringify({ ts: new Date().toISOString(), route: routeName(opps[0].route), sizeUsd: usd(opps[0].size), net: opps[0].net, would: !!chosen, mode: s.mode }) + '\n')
+    // How close the best route came (for quiet-chain backoff): best return per dollar this scan.
+    if (!focus) {
+      const near = Math.max(...opps.map((o) => o.net / usd(o.size)), ...[...bestRet.values()].map((r) => r - 1), -1)
+      quietScans = near < -QUIET_PCT / 100 ? quietScans + 1 : 0
+    }
     if (!chosen) {
       status.lastLine = `no trade (${live.length} routes, ${candidates.length} looked close)  ${p.cashName} $${cashUsd.toFixed(2)}  today ${ctx.ledger.today(p.key) >= 0 ? '+' : ''}${ctx.ledger.today(p.key).toFixed(4)}  [${s.mode}]`
       if (!focus) say(`  ${status.lastLine}`)
@@ -667,8 +708,10 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const line = `${routeName(o.route)} $${usd(o.size).toFixed(2)}, expected +$${o.net.toFixed(4)} (${((o.net / usd(o.size)) * 100).toFixed(2)}%; buy pool ${pct(buyDev)}, sell pool ${pct(sellDev)} vs fair)`
     status.lastLine = `${tradeLive ? 'TRADING' : 'would trade'}: ${line}`
     say(`  >> ${status.lastLine}`)
-    if (!chaseX) chaseSince = Date.now()
+    if (chaseFor !== o.route.X) { chaseFor = o.route.X; chaseSince = Date.now() } // a new chase (not a re-check)
     chaseX = o.route.X
+    // A chase re-checks only this route and the coin's other paying routes (up to 3): seconds, not a full scan.
+    chaseRoutes = [o, ...opps.filter((x) => x !== o && x.route.X === o.route.X && x.net > 0)].slice(0, 3).map((x) => routeKey(x.route))
     if (!tradeLive) { recordWatch(o, buyDev, sellDev); return }
     if (!status.gasOk) { say(`  not trading: a swap costs $${status.swapGasUsd.toFixed(4)} right now (MAX_SWAP_GAS_USD $${MAX_SWAP_GAS_USD})`); return }
     if (!tradingAllowed(ctx.ledger.today(p.key), MAX_DAILY_LOSS_USD)) { say(`  paused for today: ${p.key} lost $${MAX_DAILY_LOSS_USD}`); return }
@@ -692,6 +735,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     }
     const net = await inflight.run(() => execute(o)) // the whole scan already holds this chain's lock
     if (net === null || net <= 0) chaseX = null // only chase what actually paid
+    else chaseFast = true // it paid: look again almost at once
     say(`  result: ${net === null ? 'incomplete (leftover managed by the loss guard)' : `${net >= 0 ? '+' : ''}${net.toFixed(4)} after gas`}`)
     if (net !== null && usd(o.size) >= ALERT_TRADE_USD) notify(`${p.key}: ${routeName(o.route)} $${usd(o.size).toFixed(2)} -> ${net >= 0 ? '+' : ''}$${net.toFixed(4)} after gas`)
   }
@@ -700,21 +744,29 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   say(`${ctx.live ? 'LIVE switch on' : 'WATCH ONLY (HUNTER_LIVE=0)'} | mode ${st().mode} | wallet ${account.address} | cash ${p.cashName} | ${venues.map((v) => v.name).join(' + ')}${added.length ? ` | coins: ${added.join(' ')}` : ''}`)
   // MODE both (default): full scan every INTERVAL, and rescan as soon as a watched pool trades.
   const intervalMs = n(`${p.key.toUpperCase()}_INTERVAL_SEC`, String(p.intervalSec ?? INTERVAL_MS / 1000)) * 1000
-  const fullEvery = MODE === 'watch' ? n('WATCH_FULL_MIN', '10') * 60_000 : intervalMs
-  let focus: Set<string> | null = null, lastFull = 0
+  const baseEvery = MODE === 'watch' ? n('WATCH_FULL_MIN', '10') * 60_000 : intervalMs
+  // Quiet chains (best route far from profit for 5+ scans) scan 2x, then 3x less often; pool-trade alerts still wake them.
+  const fullEveryNow = () => baseEvery * (quietScans >= 10 ? 3 : quietScans >= 5 ? 2 : 1)
+  let focus: Set<string> | null = null, lastFull = 0, fullTook = 0
   while (!ctx.stopping()) {
-    if (!focus) lastFull = Date.now()
+    const wasFull = !focus
+    if (wasFull) lastFull = Date.now()
     const chasing = chaseX
     if (chasing) chaseX = null // set again by the cycle if the gap is still there
     try { await ctx.locks.run(p.key, () => cycle(focus)); status.error = undefined } catch (e) { status.error = errMsg(e); say(`cycle error: ${status.error}`) }
     if (ctx.stopping()) break
+    if (wasFull) fullTook = Date.now() - lastFull
     if (chasing && !chaseX) say(`  gap on ${chasing} closed after ${Math.round((Date.now() - chaseSince) / 1000)}s; back to full scans`)
     if (chaseX && Date.now() - chaseSince < CHASE_MAX_MS) {
       if (!chasing) say(`  chasing ${chaseX}: re-checking every ${CHASE_MS / 1000}s while the gap lasts`)
-      await sleep(CHASE_MS); focus = new Set([chaseX]); continue
+      await sleep(chaseFast ? CHASE_AFTER_TRADE_MS : CHASE_MS); chaseFast = false
+      // Full scans still run during a chase (so a better gap on another coin is not missed), but the chase gets at
+      // least 2/3 of the time: on a chain whose full scan takes a minute, that is a full scan every 3 minutes.
+      focus = Date.now() - lastFull >= Math.max(fullEveryNow(), 3 * fullTook) ? null : new Set(chaseRoutes); continue
     }
-    chaseX = null
-    const left = Math.max(0, lastFull + fullEvery - Date.now())
+    if (chaseX) say(`  stopped chasing ${chaseX} after ${CHASE_MAX_MS / 60_000} min (CHASE_MAX_MIN)`)
+    chaseX = null; chaseFor = null
+    const left = Math.max(0, lastFull + fullEveryNow() - Date.now())
     if (MODE === 'scan') { focus = null; await sleep(left); continue }
     focus = await watcher.wait(left, ctx.stopping)
   }

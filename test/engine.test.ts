@@ -114,6 +114,18 @@ test('scanRoutes quotes a losing route only at its probe sizes (full, half, quar
   assert.equal(calls, 3)
 })
 
+test('scanRoutes with a size hint quotes a losing route once, and a paying one at every size', async () => {
+  let calls = 0
+  const counted = (v: Venue): Venue => ({ ...v, quote: (a, b, c) => { calls++; return v.quote(a, b, c) } })
+  const losing = { X: 'wBRL' as TokenKey, buy: counted(rfq('a', 4.9)), sell: rfq('b', 5) }
+  const [o] = await scanRoutes([losing], $(2), $(70), () => 0, Infinity, () => $(70))
+  assert.ok(o.edge < 0)
+  assert.equal(calls, 1)
+  const paying = { X: 'wBRL' as TokenKey, buy: rfq('a', 5.1), sell: rfq('b', 5) }
+  const [p] = await scanRoutes([paying], $(2), $(70), () => 0, Infinity, () => $(35))
+  assert.ok(p.edge > 0 && p.size === $(70)) // found the bigger size even though the hint was half
+})
+
 test('exit impact: sizes that push the exit pool more than the limit are not chosen', async () => {
   const { exitImpactBps, scanRoutes } = await import('../src/engine.js')
   // Buy pool is deep and 3% cheap; the exit pool is shallow ($500 a side), so bigger sizes move its price a lot.

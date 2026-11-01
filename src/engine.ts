@@ -86,13 +86,15 @@ export async function bestSize(route: Route, minSize: bigint, maxSize: bigint, g
 // estimates (optional): filled with each coin's best estimated route, so a scan can show every coin even when none
 // comes close enough for exact quotes.
 export type Estimate = { route: Route; size: bigint; back: bigint }
-export async function prefilterRoutes(routes: Route[], probes: bigint | bigint[], estimates?: Map<string, Estimate>): Promise<Route[]> {
+// onRoute (optional): every route's estimated return per dollar at each probe size (e.g. 0.97 = loses 3%).
+export type OnEstimate = (r: Route, ret: number, probe: bigint) => void
+export async function prefilterRoutes(routes: Route[], probes: bigint | bigint[], estimates?: Map<string, Estimate>, onRoute?: OnEstimate): Promise<Route[]> {
   const sizes = [...new Set(Array.isArray(probes) ? probes : [probes])]
   const kept = new Set<Route>()
-  for (const probe of sizes) for (const r of await prefilterAt(routes, probe, estimates)) kept.add(r)
+  for (const probe of sizes) for (const r of await prefilterAt(routes, probe, estimates, onRoute)) kept.add(r)
   return routes.filter((r) => kept.has(r))
 }
-async function prefilterAt(routes: Route[], probe: bigint, estimates?: Map<string, Estimate>): Promise<Route[]> {
+async function prefilterAt(routes: Route[], probe: bigint, estimates?: Map<string, Estimate>, onRoute?: OnEstimate): Promise<Route[]> {
   const coins = [...new Set(routes.map((r) => r.X))]
   const keep: Route[] = []
   await Promise.all(coins.map(async (X) => {
@@ -108,6 +110,7 @@ async function prefilterAt(routes: Route[], probe: bigint, estimates?: Map<strin
       const b = buys.get(r.buy), sl = sells.get(r.sell)
       if (!b || !sl) continue
       const est = (sl * b) / ref // dollars back from selling what $probe bought on r.buy
+      onRoute?.(r, Number(est) / Number(probe), probe)
       if (est * 1000n >= probe * 999n) keep.push(r)
       if (estimates) {
         const cur = estimates.get(X)
@@ -129,10 +132,16 @@ async function prefilterAt(routes: Route[], probe: bigint, estimates?: Map<strin
 export const probeSizes = (minSize: bigint, maxSize: bigint): bigint[] =>
   [...new Set([maxSize, maxSize / 2n, maxSize / 4n].map((s) => (s < minSize ? minSize : s)))].filter((s) => s <= maxSize)
 
-export async function scanRoutes(routes: Route[], minSize: bigint, maxSize: bigint, gasUsdFor: (r: Route) => number, maxExitImpactBps = Infinity): Promise<Opp[]> {
+// firstSize (optional): the size a route's estimate looked best at (from the prefilter). The route is quoted there
+// first, and only if it pays there are the other sizes tried: most candidates lose, and this cuts their quotes by 2/3.
+export async function scanRoutes(routes: Route[], minSize: bigint, maxSize: bigint, gasUsdFor: (r: Route) => number, maxExitImpactBps = Infinity, firstSize?: (r: Route) => bigint | undefined): Promise<Opp[]> {
   const sizes = probeSizes(minSize, maxSize)
   const found = await Promise.all(routes.map(async (r) => {
-    const all = (await Promise.all(sizes.map((s) => evaluate(r, s, gasUsdFor(r)).catch(() => null)))).filter(Boolean) as Opp[]
+    const hint = firstSize?.(r)
+    const one = hint !== undefined && sizes.includes(hint) ? await evaluate(r, hint, gasUsdFor(r)).catch(() => null) : null
+    if (one && one.edge <= 0) return one // loses at its best estimated size: done
+    const rest = (await Promise.all(sizes.filter((s) => s !== one?.size).map((s) => evaluate(r, s, gasUsdFor(r)).catch(() => null)))).filter(Boolean) as Opp[]
+    const all = one ? [one, ...rest] : rest
     if (!all.length) return null
     const first = [...all].sort((a, b) => b.net - a.net)[0]
     if (!all.some((o) => o.edge > 0)) return first // loses at every size: done, no more quotes
