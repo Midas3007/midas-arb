@@ -14,7 +14,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 // as the second leg of a trade is where that hurts (Kiyoshi's log: three wARS cycles in a row ended "below_min" and
 // the leftover was sold at a loss). So previews of SELLING to Textile get a haircut: the 80th percentile of how much
 // lower firm quotes have come in (learned from every firm quote, per coin, saved in textile.json), and
-// TEXTILE_SELL_HAIRCUT_BPS (5 = 0.05%) until there is enough history. Buying from Textile (it goes first) needs
+// TEXTILE_SELL_HAIRCUT_BPS (default 0) until there is enough history. Buying from Textile (it goes first) needs
 // none: its firm price is known before anything is committed, and a low one is simply refused.
 export function haircutBps(samples: number[], dflt: number, minSamples = 5): number {
   if (samples.length < minSamples) return dflt
@@ -38,7 +38,9 @@ export function textileVenue(o: {
   balanceOf: (t: string) => Promise<bigint>
   statsFile?: string // where firm-vs-preview history is kept
 }): TextileVenue {
-  const DEFAULT_HAIRCUT = Number(process.env.TEXTILE_SELL_HAIRCUT_BPS ?? '5')
+  // 0 until real fills say otherwise: on 1 Nov Kiyoshi's wARS Uniswap -> Textile at $210 filled at the preview (+$0.0227),
+  // so a blanket margin hid real trades. A low firm quote is refused anyway and the leftover sold back.
+  const DEFAULT_HAIRCUT = Number(process.env.TEXTILE_SELL_HAIRCUT_BPS ?? '0')
   let stats: Record<string, number[]> = {}
   try { if (o.statsFile && existsSync(o.statsFile)) stats = JSON.parse(readFileSync(o.statsFile, 'utf8')) } catch { stats = {} }
   const record = (coin: string, shortfallBps: number) => {

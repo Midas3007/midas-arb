@@ -72,7 +72,7 @@ idea applies with the stock price as the fair price:
 | A price feed stopped | a fair pool looks mispriced | needs 2 agreeing fresh sources; stale or disagreeing = not traded |
 | A pool nobody can trade | "off by 5%" for days | a pool off its peg for >24 h is skipped |
 | Fake token or broken pool | a quote 30% from fair | anything >20% from fair is skipped |
-| Textile's binding quote below its preview | stuck with the coin, sold at a small loss (Kiyoshi's log: 3 in a row) | selling to Textile is counted 0.05% lower, then by how far its firm quotes really fell short (learned per coin from every fill); Textile-first routes need no margin |
+| Textile's binding quote below its preview | stuck with the coin, sold at a small loss (Kiyoshi's log: 3 in a row) | selling to Textile is counted lower by how far its firm quotes really fell short (learned per coin from every fill; 0 until then); Textile-first routes need no margin |
 | Thin exit pool | the sell leg eats the profit | sizes that move the exit pool >1% are not considered |
 | Sandwich bots | the swap fills worse than quoted | 0.3% slippage limit, every transaction simulated before sending |
 | Half-finished trade | coin left over after leg 1 | leg 2 never sells below leg 1's cost; leftovers sold by the loss guard (saved across restarts) |

@@ -62,7 +62,8 @@ const NEWPOOL_MS = n('NEWPOOL_SEC', '60') * 1000
 const OBSERVE_MS = n('OBSERVE_SEC', '300') * 1000
 const CHASE_MS = n('CHASE_SEC', '5') * 1000 // chase mode: re-check a coin with a live gap this often...
 const CHASE_MAX_MS = n('CHASE_MAX_MIN', '10') * 60_000 // ...for at most this long
-const PREFILTER_FROM = n('PREFILTER_FROM', '60') // chains with more routes than this are prefiltered
+const PREFILTER_FROM = n('PREFILTER_FROM', '60')
+const SHOW_COINS = n('SHOW_COINS', '8') // scan log: the best route of this many coins // chains with more routes than this are prefiltered
 const MAX_FLATTEN_LOSS_BPS = 50, MAX_HOLD_MS = 30 * 60_000, COOLDOWN_MS = 5 * 60_000, SLIPPAGE_BPS = 30n
 const MODE = process.argv.includes('--scan') ? 'scan' : process.argv.includes('--watch') ? 'watch' : (process.env.MODE ?? 'both')
 
@@ -628,7 +629,12 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       if (!c.why) { chosen = { o, ...c }; break }
       blocked.push(`${routeName(o.route)}: ${c.why}`)
     }
-    if (!focus) for (const o of opps.slice(0, 3)) say(`  ${routeName(o.route).padEnd(26)} $${usd(o.size).toFixed(2).padStart(6)} -> $${usd(o.out).toFixed(4)}  net ${o.net >= 0 ? '+' : ''}${o.net.toFixed(4)}`)
+    // One line per coin (its best route), like Kiyoshi's list, so each coin's state is visible every scan.
+    if (!focus) {
+      const bestPer = new Map<string, Opp>()
+      for (const o of opps) if (!bestPer.has(o.route.X)) bestPer.set(o.route.X, o)
+      for (const o of [...bestPer.values()].slice(0, SHOW_COINS)) say(`  ${routeName(o.route).padEnd(30)} $${usd(o.size).toFixed(2).padStart(7)} -> $${usd(o.out).toFixed(4)}  net ${o.net >= 0 ? '+' : ''}${o.net.toFixed(4)}`)
+    }
     if (!focus) for (const b of blocked.slice(0, 2)) say(`  skip ${b}`)
     if (opps[0]) appendFileSync(`${dir}/scans.jsonl`, JSON.stringify({ ts: new Date().toISOString(), route: routeName(opps[0].route), sizeUsd: usd(opps[0].size), net: opps[0].net, would: !!chosen, mode: s.mode }) + '\n')
     if (!chosen) {
