@@ -152,8 +152,8 @@ earned, which routes, and how long gaps stayed open. To trade:
 3. Chains that earned their place in watch mode trade; the treasury moves cash to them.
 
 **Keep it running by itself:** `npm run forever` instead of `npm start` restarts Peg Hunter 10 seconds after any
-crash (Ctrl+C still stops it). RPC addresses that don't answer at startup (down, or out of credits like a used-up
-QuickNode trial) are skipped automatically, and a daily summary arrives on Telegram at 20:00 UTC
+crash (Ctrl+C still stops it). RPC addresses that don't answer (down, or out of credits like a used-up QuickNode
+trial) move to the back and are re-checked every minute, so one that recovers is used again, and a daily summary arrives on Telegram at 20:00 UTC
 (`DAILY_REPORT_UTC`).
 
 ### Going live, safely

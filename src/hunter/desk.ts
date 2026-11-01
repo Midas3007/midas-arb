@@ -11,7 +11,7 @@ import {
   type Address, type Hex,
 } from 'viem'
 import { toDataSuffix } from '@celo/attribution-tags'
-import { buildRoutes, prefilterRoutes, probeSizes, routeKey, routeName, scanRoutes, shouldSell, tradingAllowed, usdOf, type Opp, type Route, type Venue } from '../engine.js'
+import { buildRoutes, prefilterRoutes, probeSizes, routeKey, type Estimate, routeName, scanRoutes, shouldSell, tradingAllowed, usdOf, type Opp, type Route, type Venue } from '../engine.js'
 import { PendingStore } from '../pending.js'
 import { notify } from '../notify.js'
 import { PoolWatcher } from '../watch.js'
@@ -618,7 +618,8 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const gas = new Map<string, number>()
     for (const r of live) gas.set(routeKey(r), await gasUsd(r.buy.gas + r.sell.gas))
     // Many routes (Robinhood has 1,000+): estimate them all from one buy and one sell quote per pool and coin first.
-    const candidates = live.length > PREFILTER_FROM ? await prefilterRoutes(live, probeSizes(minSize, maxSize)) : live
+    const estimates = new Map<string, Estimate>()
+    const candidates = live.length > PREFILTER_FROM ? await prefilterRoutes(live, probeSizes(minSize, maxSize), estimates) : live
     const opps = await scanRoutes(candidates, minSize, maxSize, (r) => gas.get(routeKey(r)) ?? 0, MAX_EXIT_IMPACT_BPS)
     status.lastScanAt = Date.now()
     // One-time live test (TEST_TRADE=<chain>, HUNTER_LIVE=1, chain funded): a $2 round trip on this chain's best route,
@@ -647,7 +648,13 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     if (!focus) {
       const bestPer = new Map<string, Opp>()
       for (const o of opps) if (!bestPer.has(o.route.X)) bestPer.set(o.route.X, o)
-      for (const o of [...bestPer.values()].slice(0, SHOW_COINS)) say(`  ${routeName(o.route).padEnd(30)} $${usd(o.size).toFixed(2).padStart(7)} -> $${usd(o.out).toFixed(4)}  net ${o.net >= 0 ? '+' : ''}${o.net.toFixed(4)}`)
+      const lines: { net: number; text: string }[] = [...bestPer.values()].map((o) => ({ net: o.net, text: `  ${routeName(o.route).padEnd(30)} $${usd(o.size).toFixed(2).padStart(7)} -> $${usd(o.out).toFixed(4)}  net ${o.net >= 0 ? '+' : ''}${o.net.toFixed(4)}` }))
+      // Coins with no exact quote this scan: their best estimated route (before gas), so every coin shows.
+      for (const [X, e] of estimates) if (!bestPer.has(X)) {
+        const edge = usd(e.back) - usd(e.size)
+        lines.push({ net: edge - (gas.get(routeKey(e.route)) ?? 0), text: `  ${routeName(e.route).padEnd(30)} $${usd(e.size).toFixed(2).padStart(7)} -> $${usd(e.back).toFixed(4)}  est ${edge >= 0 ? '+' : ''}${edge.toFixed(4)} before gas` })
+      }
+      for (const l of lines.sort((a, b) => b.net - a.net).slice(0, SHOW_COINS)) say(l.text)
     }
     if (!focus) for (const b of blocked.slice(0, 2)) say(`  skip ${b}`)
     if (opps[0]) appendFileSync(`${dir}/scans.jsonl`, JSON.stringify({ ts: new Date().toISOString(), route: routeName(opps[0].route), sizeUsd: usd(opps[0].size), net: opps[0].net, would: !!chosen, mode: s.mode }) + '\n')

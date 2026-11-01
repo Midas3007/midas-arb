@@ -83,13 +83,16 @@ export async function bestSize(route: Route, minSize: bigint, maxSize: bigint, g
 // linear, and a small allowance (0.1% of the trade) keeps borderline routes in.
 // Several probe sizes: some venues (RFQ desks like Textile) price big trades better than small ones, so a route can
 // lose at $50 and pay at $200. A route is kept if it comes close at any of them.
-export async function prefilterRoutes(routes: Route[], probes: bigint | bigint[]): Promise<Route[]> {
+// estimates (optional): filled with each coin's best estimated route, so a scan can show every coin even when none
+// comes close enough for exact quotes.
+export type Estimate = { route: Route; size: bigint; back: bigint }
+export async function prefilterRoutes(routes: Route[], probes: bigint | bigint[], estimates?: Map<string, Estimate>): Promise<Route[]> {
   const sizes = [...new Set(Array.isArray(probes) ? probes : [probes])]
   const kept = new Set<Route>()
-  for (const probe of sizes) for (const r of await prefilterAt(routes, probe)) kept.add(r)
+  for (const probe of sizes) for (const r of await prefilterAt(routes, probe, estimates)) kept.add(r)
   return routes.filter((r) => kept.has(r))
 }
-async function prefilterAt(routes: Route[], probe: bigint): Promise<Route[]> {
+async function prefilterAt(routes: Route[], probe: bigint, estimates?: Map<string, Estimate>): Promise<Route[]> {
   const coins = [...new Set(routes.map((r) => r.X))]
   const keep: Route[] = []
   await Promise.all(coins.map(async (X) => {
@@ -106,6 +109,12 @@ async function prefilterAt(routes: Route[], probe: bigint): Promise<Route[]> {
       if (!b || !sl) continue
       const est = (sl * b) / ref // dollars back from selling what $probe bought on r.buy
       if (est * 1000n >= probe * 999n) keep.push(r)
+      if (estimates) {
+        const cur = estimates.get(X)
+        const gain = (e: Estimate) => Number(e.back - e.size) / Number(e.size)
+        const mine = { route: r, size: probe, back: est }
+        if (!cur || gain(mine) > gain(cur)) estimates.set(X, mine)
+      }
     }
   }))
   return keep

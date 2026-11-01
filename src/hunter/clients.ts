@@ -25,8 +25,9 @@ export function hunterAccount(): PrivateKeyAccount {
   return acct
 }
 
-// Drop RPC addresses that don't answer (down, wrong, or out of credits like a used-up QuickNode trial), so a chain
-// isn't stuck on them. Called once per chain at startup; if none answer, all are kept and retried.
+// RPC addresses that don't answer at startup (down, or out of credits like a used-up QuickNode trial) move to the
+// back of the list instead of being dropped: the working ones are used first, and the connection keeps re-checking
+// all of them every minute (see clientsFor), so one that comes back is used again.
 export async function pruneRpcs(p: ChainProfile, say: (s: string) => void = console.log): Promise<void> {
   const ok: string[] = []
   await Promise.all(p.rpcs.map(async (u) => {
@@ -34,10 +35,10 @@ export async function pruneRpcs(p: ChainProfile, say: (s: string) => void = cons
       const r = await fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] }), signal: AbortSignal.timeout(10_000) })
       const j: any = await r.json()
       if (r.ok && typeof j?.result === 'string') ok.push(u)
-      else say(`[${p.key}] RPC skipped (${j?.error?.message ?? `HTTP ${r.status}`}): ${u.replace(/\/[A-Za-z0-9]{16,}\/?$/, '/…')}`)
-    } catch (e: any) { say(`[${p.key}] RPC skipped (${String(e?.message ?? e).split('\n')[0]}): ${u.replace(/\/[A-Za-z0-9]{16,}\/?$/, '/…')}`) }
+      else say(`[${p.key}] RPC not answering for now, tried last and re-checked every minute (${j?.error?.message ?? `HTTP ${r.status}`}): ${u.replace(/\/[A-Za-z0-9]{16,}\/?$/, '/…')}`)
+    } catch (e: any) { say(`[${p.key}] RPC not answering for now, tried last and re-checked every minute (${String(e?.message ?? e).split('\n')[0]}): ${u.replace(/\/[A-Za-z0-9]{16,}\/?$/, '/…')}`) }
   }))
-  if (ok.length) p.rpcs = p.rpcs.filter((u) => ok.includes(u)) // keep the order given in .env
+  p.rpcs = [...p.rpcs.filter((u) => ok.includes(u)), ...p.rpcs.filter((u) => !ok.includes(u))] // working first, .env order kept
 }
 
 const cache = new Map<string, ChainClients>()
@@ -45,7 +46,9 @@ export function clientsFor(p: ChainProfile): ChainClients {
   const hit = cache.get(p.key)
   if (hit) return hit
   // JSON-RPC batching: many calls share one HTTP request.
-  const transport = fallback(p.rpcs.map((u) => http(u, { timeout: 20_000, retryCount: 2, batch: { batchSize: 20, wait: 25 } })))
+  // fallback: if one RPC fails a call, the next one is tried; rank: every minute each RPC is pinged and the list is
+  // re-ordered by how fast and reliably it answers, so a dead one drops back and a recovered one returns.
+  const transport = fallback(p.rpcs.map((u) => http(u, { timeout: 20_000, retryCount: 2, batch: { batchSize: 20, wait: 25 } })), p.rpcs.length > 1 ? { rank: { interval: 60_000, sampleCount: 5, timeout: 10_000 } } : {})
   const account = hunterAccount()
   const c: ChainClients = {
     p,
