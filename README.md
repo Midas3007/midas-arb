@@ -100,9 +100,27 @@ A gap is worth something only while it lasts, so most of the work is about looki
   not stop for an approval transaction every few trades.
 - **Gaps you're missing.** When a gap stays open for 30 minutes (`PERSIST_ALERT_MIN`) on a chain that isn't
   trading it (watch mode, paused, or `HUNTER_LIVE=0`), Telegram tells you, at most once every 6 hours per coin.
-  Example: USDT.b Curve -> Aerodrome on Base paid about +$0.93 on $196 for hours.
+
+- **Gas-aware estimates.** A route whose estimate cannot cover its gas plus the minimum profit (within 0.1%) is not
+  quoted exactly. At a $15 trade size that is almost every route, so a full Base scan takes about 10 seconds, and
+  Base runs one every 15 seconds (`BASE_INTERVAL_SEC`; any chain: `<CHAIN>_INTERVAL_SEC`).
 
 `SCAN_TIMING=1` prints how long each part of a scan took.
+
+## Trap pools (honeypots)
+
+Some pools are built to fool bots. Base's Curve "USDPOOL" (`0x335BE1a3...`, USDC/USDT.b) prices from an oracle
+that answers one way to calls with no gas price, which is how quotes and simulations are usually made, and
+another way inside real transactions. Every quote showed a 0.4% gap for hours, simulations passed, and every real
+sale reverted ("Exchange resulted in fewer coins than expected"). Peg Hunter now:
+
+- makes every quote and simulation with the network's gas price, from its own address (given a balance for the
+  call only), so such a pool shows its real price and its fake gap disappears;
+- stops using an exchange for a coin for 6 hours after a trade there reverts on-chain (30 minutes after one is
+  refused before sending), and sells leftover coins elsewhere instead of retrying the same failure.
+
+A pool can still find other ways to tell a quote from a trade, so a first trade on a never-traded pool is the
+riskiest one; leftovers are always dollar or currency coins the loss guard can sell.
 
 ## Chain lifecycle
 

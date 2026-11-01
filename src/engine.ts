@@ -88,13 +88,15 @@ export async function bestSize(route: Route, minSize: bigint, maxSize: bigint, g
 export type Estimate = { route: Route; size: bigint; back: bigint }
 // onRoute (optional): every route's estimated return per dollar at each probe size (e.g. 0.97 = loses 3%).
 export type OnEstimate = (r: Route, ret: number, probe: bigint) => void
-export async function prefilterRoutes(routes: Route[], probes: bigint | bigint[], estimates?: Map<string, Estimate>, onRoute?: OnEstimate): Promise<Route[]> {
+// needUsd (optional): what a route must earn before gas to trade (its gas plus the minimum profit). A route is kept
+// if its estimate comes within 0.1% of the trade of that, so small trades skip the routes that cannot pay their gas.
+export async function prefilterRoutes(routes: Route[], probes: bigint | bigint[], estimates?: Map<string, Estimate>, onRoute?: OnEstimate, needUsd?: (r: Route) => number): Promise<Route[]> {
   const sizes = [...new Set(Array.isArray(probes) ? probes : [probes])]
   const kept = new Set<Route>()
-  for (const probe of sizes) for (const r of await prefilterAt(routes, probe, estimates, onRoute)) kept.add(r)
+  for (const probe of sizes) for (const r of await prefilterAt(routes, probe, estimates, onRoute, needUsd)) kept.add(r)
   return routes.filter((r) => kept.has(r))
 }
-async function prefilterAt(routes: Route[], probe: bigint, estimates?: Map<string, Estimate>, onRoute?: OnEstimate): Promise<Route[]> {
+async function prefilterAt(routes: Route[], probe: bigint, estimates?: Map<string, Estimate>, onRoute?: OnEstimate, needUsd?: (r: Route) => number): Promise<Route[]> {
   const coins = [...new Set(routes.map((r) => r.X))]
   const keep: Route[] = []
   await Promise.all(coins.map(async (X) => {
@@ -111,7 +113,8 @@ async function prefilterAt(routes: Route[], probe: bigint, estimates?: Map<strin
       if (!b || !sl) continue
       const est = (sl * b) / ref // dollars back from selling what $probe bought on r.buy
       onRoute?.(r, Number(est) / Number(probe), probe)
-      if (est * 1000n >= probe * 999n) keep.push(r)
+      const need = needUsd ? BigInt(Math.max(0, Math.round(needUsd(r) * 1e6))) : 0n
+      if ((est - probe - need) * 1000n >= -probe) keep.push(r) // within 0.1% of paying
       if (estimates) {
         const cur = estimates.get(X)
         const gain = (e: Estimate) => Number(e.back - e.size) / Number(e.size)

@@ -148,6 +148,17 @@ test('prefilter keeps the profitable route and drops clearly losing ones', async
   assert.ok(!names.includes('fair1>cheap') && !names.includes('fair2>cheap'))
 })
 
+test('prefilter with a gas cost drops routes that cannot pay it, keeps the one that can', async () => {
+  const { prefilterRoutes, buildRoutes } = await import('../src/engine.js')
+  // flat venues: 'cheap' sells X 0.5% under the others; 'near' only 0.05% under (cannot pay $0.02 on $13.50)
+  const v = (name: string, px: number): Venue => ({ name, gas: 0, swap: fail, async quote(tin, _t, a) { const x = Number(a) / 1e6; return tin === 'USDT' ? $(x * px) : $(x / 1) } })
+  const cheap = v('cheap', 1.005), near = v('near', 1.0005), fair = v('fair', 1)
+  const routes = buildRoutes(new Map([['cheap', new Set(['X'])], ['near', new Set(['X'])], ['fair', new Set(['X'])]]), [cheap, near, fair])
+  const names = (await prefilterRoutes(routes, $(13.5), undefined, undefined, () => 0.03)).map((r) => `${r.buy.name}>${r.sell.name}`)
+  assert.ok(names.includes('cheap>fair'))
+  assert.ok(!names.includes('near>fair'))
+})
+
 test('a route that only pays at the big size is found (Textile prices big trades better)', async () => {
   const { scanRoutes } = await import('../src/engine.js')
   // Sell venue pays 0.1% more on trades of $150+ (like an RFQ desk's better price for size); buy pool is deep.

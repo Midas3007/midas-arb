@@ -452,10 +452,22 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     return Number(formatUnits(gasPrice * BigInt(units), 18)) * (await nativePrice())
   }
 
+  // ---------- exchanges that failed ----------
+  // An exchange whose trade in a coin failed is not used for that coin for a while: 6 hours after a transaction that
+  // reverted on-chain (gas was paid: something about that pool is wrong), 30 minutes after one refused before
+  // sending. Routes skip it, and leftover coins are sold elsewhere instead of retrying the same failure every scan.
+  const badVenue = new Map<string, number>()
+  const isBad = (v: Venue, X: string) => (badVenue.get(`${v.name}:${X}`) ?? 0) > Date.now()
+  function markBad(v: Venue, X: string, e: unknown) {
+    const onchain = /reverted/i.test(errMsg(e))
+    badVenue.set(`${v.name}:${X}`, Date.now() + (onchain ? 6 * 3_600_000 : 30 * 60_000))
+    say(`  ${v.name} not used for ${X} for ${onchain ? '6 hours' : '30 minutes'} (its trade failed)`)
+  }
+
   // ---------- leftover inventory (loss guard) ----------
   async function bestExit(X: string, amount: bigint) {
     let b: { venue: Venue; out: bigint } | null = null
-    for (const v of venues) { const out = await v.quote(X, 'USDT', amount); if (out && (!b || out > b.out)) b = { venue: v, out } }
+    for (const v of venues) { if (isBad(v, X)) continue; const out = await v.quote(X, 'USDT', amount); if (out && (!b || out > b.out)) b = { venue: v, out } }
     return b
   }
   let holding = false
@@ -485,7 +497,12 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
         ctx.ledger.add({ chain: p.key, kind: 'flatten', net, note: X })
         log('trades.jsonl', { event: 'flatten', X, usdOut: usd(out), costUsd: usd(lot.costUsdt), gasUsd: gas, net })
         pending.clear(X)
-      } catch (e) { say(`  flatten ${X} failed: ${errMsg(e)}`); holding = true }
+      } catch (e) {
+        say(`  flatten ${X} failed: ${errMsg(e)}`); holding = true
+        markBad(exit.venue, X, e)
+        const gas = Number(formatUnits(spentNative, 18)) * (await nativePrice())
+        if (gas > 0) ctx.ledger.add({ chain: p.key, kind: 'fee', net: -gas, note: `selling leftover ${X} on ${exit.venue.name} failed` })
+      }
     }
   }
 
@@ -498,6 +515,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     let h1: Hex
     try { h1 = await buy.swap('USDT', X, o.size, (o.mid * (10_000n - SLIPPAGE_BPS)) / 10_000n) } catch (e) {
       cooldown.set(routeKey(o.route), Date.now() + COOLDOWN_MS)
+      markBad(buy, X, e)
       const gas = Number(formatUnits(spentNative, 18)) * (await nativePrice())
       if (gas > 0) ctx.ledger.add({ chain: p.key, kind: 'trade', net: -gas, note: `${routeName(o.route)} leg 1 failed` })
       say(`  leg 1 (${buy.name} buy ${X}) failed: ${errMsg(e)}`); log('trades.jsonl', { event: 'cycle', route: routeName(o.route), leg1: errMsg(e) }); return null
@@ -520,6 +538,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       cooldown.set(routeKey(o.route), Date.now() + COOLDOWN_MS)
       const gas = Number(formatUnits(spentNative, 18)) * (await nativePrice())
       ctx.ledger.add({ chain: p.key, kind: 'trade', net: -gas, note: `${routeName(o.route)} leg 2 failed (leftover goes to the loss guard)` })
+      markBad(sell, X, e)
       say(`  leg 2 (${sell.name} sell ${X}) failed: ${errMsg(e)}`); log('trades.jsonl', { event: 'cycle', route: routeName(o.route), tx1: h1, leg2: errMsg(e) })
       notify(`${p.key}: ${routeName(o.route)} leg 2 failed; holding ${X}, the loss guard will sell it.`)
       return null
@@ -639,7 +658,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     if (!focus && Date.now() - poolAt > NEWPOOL_MS && (await newPools().catch(() => false))) await discover()
     if (!focus && Date.now() - observedAt > OBSERVE_MS) await observeAll()
     lap('pre')
-    const live = routes.filter((r) => (cooldown.get(routeKey(r)) ?? 0) < Date.now() && (muted.get(routeKey(r)) ?? 0) < Date.now() && (!focus || focus.has(r.X) || focus.has(routeKey(r))))
+    const live = routes.filter((r) => (cooldown.get(routeKey(r)) ?? 0) < Date.now() && (muted.get(routeKey(r)) ?? 0) < Date.now() && !isBad(r.buy, r.X) && !isBad(r.sell, r.X) && (!focus || focus.has(r.X) || focus.has(routeKey(r))))
     if (!live.length) { status.lastLine = routes.length ? 'all routes cooling down' : 'no routes on this chain (no exchange pairs our coins with the cash token)'; return }
     status.swapGasUsd = await gasUsd(180_000)
     status.gasOk = status.swapGasUsd <= MAX_SWAP_GAS_USD
@@ -665,7 +684,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const candidates = live.length > PREFILTER_FROM
       ? await prefilterRoutes(live, probeSizes(minSize, maxSize), estimates, (r, ret, probe) => {
         if (ret > (bestRet.get(r) ?? -Infinity)) { bestRet.set(r, ret); bestAt.set(r, probe) }
-      })
+      }, (r) => (gas.get(routeKey(r)) ?? 0) + RULES.minNetUsd)
       : live
     lap(`prefilter(${live.length}->${candidates.length})`)
     // Junk: loses more than JUNK_PCT at every test size (an empty or broken pool, or the wrong direction of a big

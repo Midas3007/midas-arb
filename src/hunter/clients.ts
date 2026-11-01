@@ -2,7 +2,7 @@
 // treasury.
 import 'dotenv/config'
 import { cheapFees } from '../fees.js'
-import { createPublicClient, createWalletClient, fallback, http, type Address, type Hex, type PrivateKeyAccount, type PublicClient, type WalletClient } from 'viem'
+import { createPublicClient, createWalletClient, fallback, http, toHex, type Address, type Hex, type PrivateKeyAccount, type PublicClient, type Transport, type WalletClient } from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import type { ChainProfile } from './chains.js'
 
@@ -41,6 +41,50 @@ export async function pruneRpcs(p: ChainProfile, say: (s: string) => void = cons
   p.rpcs = [...p.rpcs.filter((u) => ok.includes(u)), ...p.rpcs.filter((u) => !ok.includes(u))] // working first, .env order kept
 }
 
+// Honest quotes. Some pools are traps for bots: their price oracle answers one way when a call carries no gas price
+// (how quotes and simulations are normally made) and another way inside a real transaction. On Base, Curve's
+// "USDPOOL" (0x335BE1a3...) showed a 0.4% gap that way: every quote and simulation passed, every real sale reverted.
+// So every eth_call here carries the network's gas price (doubled, so it is never under the base fee) and comes from
+// our own address, which is given a balance for the call only (quotes work with an empty wallet, and big multicall
+// batches are not cut short). A trap then shows its real price, and its fake gap disappears. If an RPC refuses
+// these extra fields, plain calls are used on that chain (said once).
+const SIM_BALANCE = toHex(10n ** 24n)
+const SIM_GAS = toHex(15_000_000n) // a gas limit must be given (some nodes default to an absurd one); under Gnosis's 17M block
+function honestCalls(t: Transport, me: Address, key: string): Transport {
+  return ((params: any) => {
+    const inner = t(params)
+    let gp = 0n, gpAt = 0, off = false
+    const price = async () => {
+      if (Date.now() - gpAt > 30_000) {
+        gpAt = Date.now()
+        try { gp = BigInt((await inner.request({ method: 'eth_gasPrice' })) as string) } catch { /* keep the last one */ }
+      }
+      return gp
+    }
+    const request = async (args: any, opts?: any) => {
+      if (off || args?.method !== 'eth_call') return inner.request(args, opts)
+      const [tx, block, overrides] = args.params ?? []
+      if (!tx || tx.gasPrice || tx.maxFeePerGas) return inner.request(args, opts)
+      const g = await price()
+      if (g <= 0n) return inner.request(args, opts)
+      const from = (tx.from ?? me) as string
+      const ov = { ...(overrides ?? {}) }
+      const k = Object.keys(ov).find((a) => a.toLowerCase() === from.toLowerCase()) ?? from
+      if (ov[k]?.balance === undefined) ov[k] = { ...(ov[k] ?? {}), balance: SIM_BALANCE }
+      try {
+        return await inner.request({ ...args, params: [{ ...tx, from, gas: tx.gas ?? SIM_GAS, gasPrice: toHex(g * 2n) }, block ?? 'latest', ov] }, opts)
+      } catch (e: any) {
+        const m = `${e?.details ?? ''} ${e?.message ?? ''}`
+        if (/revert/i.test(m) || !/override|not supported|unsupported|invalid argument|unknown field|cannot unmarshal|insufficient funds|-32602/i.test(m)) throw e
+        off = true
+        console.log(`[${key}] this RPC refuses priced calls; quotes on ${key} use plain calls (trap pools are not filtered here)`)
+        return inner.request(args, opts)
+      }
+    }
+    return { ...inner, request }
+  }) as Transport
+}
+
 const cache = new Map<string, ChainClients>()
 export function clientsFor(p: ChainProfile): ChainClients {
   const hit = cache.get(p.key)
@@ -48,8 +92,8 @@ export function clientsFor(p: ChainProfile): ChainClients {
   // JSON-RPC batching: many calls share one HTTP request.
   // fallback: if one RPC fails a call, the next one is tried; rank: every minute each RPC is pinged and the list is
   // re-ordered by how fast and reliably it answers, so a dead one drops back and a recovered one returns.
-  const transport = fallback(p.rpcs.map((u) => http(u, { timeout: 20_000, retryCount: 2, batch: { batchSize: 20, wait: 25 } })), p.rpcs.length > 1 ? { rank: { interval: 60_000, sampleCount: 5, timeout: 10_000 } } : {})
   const account = hunterAccount()
+  const transport = honestCalls(fallback(p.rpcs.map((u) => http(u, { timeout: 20_000, retryCount: 2, batch: { batchSize: 20, wait: 25 } })), p.rpcs.length > 1 ? { rank: { interval: 60_000, sampleCount: 5, timeout: 10_000 } } : {}), account.address, p.key)
   const c: ChainClients = {
     p,
     pub: createPublicClient({ chain: p.chain, transport, batch: { multicall: true } }) as PublicClient,
