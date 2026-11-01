@@ -115,7 +115,7 @@ A gap is worth something only while it lasts, so most of the work is about looki
 `/chain base live|watch|off` on Telegram sets a chain by hand; `/chain base auto` hands it back to the rules.
 A chain that is **off** does nothing at all (no scans, no RPC calls), so on a phone the chains that are on run
 faster. `/only base` switches every other chain off; `/chain sei watch` turns one back on, `/chain all auto` all of
-them. Leftover coins on a chain that is switched off are still sold.
+them (live chains are never changed by `/chain all`; a chain that was off starts watching from day 0). Leftover coins on a chain that is switched off are still sold.
 `HUNTER_START_LIVE=celo` skips the watch period for chosen chains on the first start; a chain that is already
 watching goes live with `/chain celo live`.
 

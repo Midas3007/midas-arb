@@ -3,7 +3,7 @@
 //   /chains            each chain's mode and why
 //   /chain base live   force a chain live (also: watch, off, auto = back to the automatic rules)
 //                      off = the chain does nothing at all (no scans), so the others run faster
-//   /chain all watch   every chain at once (watch, off or auto; live only one by one)
+//   /chain all watch   every chain at once except live ones (watch, off or auto; live only one by one)
 //   /only base         run only this chain: every other chain off (turn them back on with /chain <name> watch)
 //   /gaps              pools furthest from their peg right now
 //   /withdraw          sweep profit now (ignores SWEEP_AT_USD; the fee and $3 rules still apply)
@@ -90,7 +90,9 @@ export async function telegramLoop(ctx: Ctx, keys: string[]) {
     return [...rows, back]
   }
   const setChain = (k: string, what: string) => {
-    if (what === 'auto') S().chains[k].manual = false
+    // auto on a chain that was switched off by hand: it starts watching again under the rules (not paused for a week).
+    if (what === 'auto' && S().chains[k].mode === 'paused' && S().chains[k].manual) S().chains[k] = freshState('watch', Date.now(), 'back to the automatic rules')
+    else if (what === 'auto') S().chains[k].manual = false
     else S().chains[k] = { ...freshState(what === 'off' ? 'paused' : (what as 'live' | 'watch'), Date.now(), `set to ${what} on Telegram`), manual: true }
     ctx.store.save()
     const c = S().chains[k]
@@ -154,7 +156,8 @@ export async function telegramLoop(ctx: Ctx, keys: string[]) {
       case '/chains': return send(`${chainsText()}\n\nTap a chain to switch it (* = set by hand):`, kb(chainButtons()))
       case '/chain': {
         const [k, what] = [args[0]?.toLowerCase(), args[1]?.toLowerCase()]
-        if (k === 'all' && ['watch', 'off', 'auto'].includes(what ?? '')) return send(keys.map((x) => setChain(x, what)).join('\n'))
+        // all: every chain except the ones trading live, which keep their mode (change those one by one).
+        if (k === 'all' && ['watch', 'off', 'auto'].includes(what ?? '')) return send(keys.map((x) => (S().chains[x].mode === 'live' ? `${x} stays live` : setChain(x, what))).join('\n'))
         if (!k || !keys.includes(k) || !['live', 'watch', 'off', 'auto'].includes(what ?? '')) return send(`usage: /chain <${keys.join('|')}> live|watch|off|auto\n       /chain all watch|off|auto`)
         return send(setChain(k, what))
       }
