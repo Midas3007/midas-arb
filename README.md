@@ -113,7 +113,8 @@ A gap is worth something only while it lasts, so most of the work is about looki
 | **paused** | its cash moves to the live chains | after 7 days: **watch** again |
 
 `/chain base live|watch|off` on Telegram sets a chain by hand; `/chain base auto` hands it back to the rules.
-`HUNTER_START_LIVE=celo` skips the watch period for chosen chains.
+`HUNTER_START_LIVE=celo` skips the watch period for chosen chains on the first start; a chain that is already
+watching goes live with `/chain celo live`.
 
 ## Other income
 
