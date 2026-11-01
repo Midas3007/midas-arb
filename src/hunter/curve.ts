@@ -3,6 +3,7 @@
 // A coin pair is traded inside one pool. Older pools number their coins with int128, newer ones with uint256:
 // each pool's style is detected once with a tiny quote. Meta pools (a coin against a base pool's LP token)
 // are traded through their underlying coins, so EURe/x3CRV on Gnosis trades EURe against WXDAI directly.
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { encodeFunctionData, parseAbi, type Address, type Hex, type PublicClient } from 'viem'
 import type { Token } from './chains.js'
 import type { HopVenue } from './hop.js'
@@ -19,8 +20,31 @@ const A256 = parseAbi([
 ])
 type Leg = { pool: Address; i: number; j: number; underlying: boolean; style?: '128' | '256' }
 
+// Curve's pool list (only the fields used), from its API. The API can fail (a phone's connection, a busy server):
+// each fetch is tried 3 times, and the last good list is kept on disk and used when all 3 fail.
+async function poolList(apiChain: string, cacheFile?: string): Promise<any[]> {
+  let last: unknown
+  for (let i = 0; i < 3; i++) {
+    try {
+      const r = await fetch(`https://api.curve.finance/v1/getPools/all/${apiChain}`, { signal: AbortSignal.timeout(60_000) })
+      if (!r.ok) throw new Error(`Curve API HTTP ${r.status}`)
+      const j: any = await r.json()
+      const list: any[] = (j?.data?.poolData ?? []).map((p: any) => ({
+        address: p.address, usdTotal: p.usdTotal, isMetaPool: p.isMetaPool,
+        coins: (p.coins ?? []).map((c: any) => ({ address: c.address })),
+        underlyingCoins: (p.underlyingCoins ?? []).map((c: any) => ({ address: c.address })),
+      }))
+      if (!list.length) throw new Error('Curve API returned no pools')
+      if (cacheFile) try { writeFileSync(cacheFile, JSON.stringify(list)) } catch { /* cache is optional */ }
+      return list
+    } catch (e) { last = e; if (i < 2) await new Promise((r) => setTimeout(r, 3000 * (i + 1))) }
+  }
+  if (cacheFile && existsSync(cacheFile)) try { return JSON.parse(readFileSync(cacheFile, 'utf8')) } catch { /* fall through */ }
+  throw last
+}
+
 export function curveVenue(o: {
-  apiChain: string; minTvlUsd?: number
+  apiChain: string; minTvlUsd?: number; cacheFile?: string
   pub: PublicClient; T: Record<string, Token>
   rpc: <T>(f: () => Promise<T>) => Promise<T>
   toRaw: (t: string, a: bigint) => bigint; fromRaw: (t: string, a: bigint) => bigint
@@ -54,8 +78,7 @@ export function curveVenue(o: {
     pools,
     addrs,
     async discover() {
-      const j: any = await fetch(`https://api.curve.finance/v1/getPools/all/${o.apiChain}`, { signal: AbortSignal.timeout(30_000) }).then((r) => r.json())
-      const list: any[] = j?.data?.poolData ?? []
+      const list = await poolList(o.apiChain, o.cacheFile)
       const known = keyOf()
       legs.clear(); pools.clear(); addrs.clear(); memo.clear()
       for (const p of list) {

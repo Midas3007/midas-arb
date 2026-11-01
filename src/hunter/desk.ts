@@ -339,7 +339,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     else say(`skipping ${sv.name}: contracts not found`)
   }
   if (p.curve) {
-    const cv = curveVenue({ apiChain: p.curve, pub, T, rpc, toRaw, fromRaw, send, ensureAllowance })
+    const cv = curveVenue({ apiChain: p.curve, cacheFile: `${dir}/curve-pools.json`, pub, T, rpc, toRaw, fromRaw, send, ensureAllowance })
     venues.push(cv)
     const others = () => venues.filter((v) => v !== cv && !v.name.startsWith('curve'))
     const receivedByHash = async (t: string, before: bigint, hash: Hex) => received(t, before, (await pub.getTransactionReceipt({ hash })).blockNumber)
@@ -369,11 +369,12 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   const watcher = new PoolWatcher(pub as any, n(`${p.key.toUpperCase()}_WATCH_MS`, String(p.watchMs ?? process.env.WATCH_MS ?? 1500)))
 
   // ---------- discovery ----------
-  let routes: Route[] = [], discoveredAt = 0
+  let routes: Route[] = [], discoveredAt = 0, retryDiscoverAt = 0, discoverFails = 0
   const muted = new Map<string, number>() // junk routes (near-empty or broken pools) -> skipped until this time
   async function discover() {
     // Mento first: it adds the currencies it lists (NGNm, ZARm...), and the other exchanges then look for their pools.
-    const disc = (v: DexVenue) => v.discover(corridors()).catch((e) => { say(`${v.name} discovery: ${errMsg(e)}`); return 0 })
+    const failed: string[] = []
+    const disc = (v: DexVenue) => v.discover(corridors()).catch((e) => { say(`${v.name} discovery: ${errMsg(e)}`); failed.push(v.name); return 0 })
     const mentoCount = await Promise.all(venues.filter((v) => v.name === 'mento').map(disc))
     const others = await Promise.all(venues.filter((v) => v.name !== 'mento').map(disc))
     const counts = venues.map((v) => (v.name === 'mento' ? mentoCount.shift()! : others.shift()!))
@@ -405,6 +406,13 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       routes.push(...r)
     }
     discoveredAt = Date.now()
+    // An exchange whose discovery failed (its API or RPC was down) is retried soon, not in 6 hours: 2, 4, 8... min.
+    if (failed.length) {
+      discoverFails++
+      const min = Math.min(60, 2 ** discoverFails)
+      retryDiscoverAt = Date.now() + min * 60_000
+      say(`  ${failed.join(', ')} not found this time; trying again in ${min} min`)
+    } else { discoverFails = 0; retryDiscoverAt = 0 }
     muted.clear() // a fresh discovery (or a new pool) gives every route another chance
     const traded = new Set(routes.map((r) => r.X))
     status.routes = routes.length
@@ -615,7 +623,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const T0 = Date.now(), tm: string[] = [], lap = (k: string) => tm.push(`${k} ${((Date.now() - T0) / 1000).toFixed(1)}s`)
     if (ctx.live) await flatten()
     if (holding) { status.lastLine = 'holding leftover coins; no new trades until they are sold'; say(`  ${status.lastLine}`); return }
-    if (!discoveredAt || Date.now() - discoveredAt > 6 * 3_600_000) await discover() // a chain with no routes waits too
+    if (!discoveredAt || Date.now() - discoveredAt > 6 * 3_600_000 || (retryDiscoverAt && Date.now() > retryDiscoverAt)) await discover() // a chain with no routes waits too
     if (!focus && Date.now() - poolAt > NEWPOOL_MS && (await newPools().catch(() => false))) await discover()
     if (!focus && Date.now() - observedAt > OBSERVE_MS) await observeAll()
     lap('pre')
