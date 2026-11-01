@@ -13,6 +13,7 @@ import { LIFECYCLE, nextState } from './policy.js'
 import { Ledger, Locks, Store } from './store.js'
 import { statusText, telegramLoop } from './telegram.js'
 import { treasuryRound } from './treasury.js'
+import { switching } from './switch.js'
 import { inflight } from './inflight.js'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -64,7 +65,7 @@ if (live) (async () => {
   const every = Number(process.env.TREASURY_MIN ?? '10') * 60_000
   await sleep(60_000) // let the desks start first
   while (!stopping) {
-    try { await treasuryRound({ store: ctx.store, ledger: ctx.ledger, locks: ctx.locks, chains: keys.map((k) => CHAINS[k]) }, { go: true }) }
+    if (!switching()) try { await treasuryRound({ store: ctx.store, ledger: ctx.ledger, locks: ctx.locks, chains: keys.map((k) => CHAINS[k]) }, { go: true }) }
     catch (e: any) { console.log(`treasury error: ${String(e?.message ?? e).split('\n')[0]}`) }
     await sleep(every)
   }

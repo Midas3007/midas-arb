@@ -26,8 +26,9 @@ export async function lifiQuote(from: ChainClients, to: ChainClients, fromToken:
 
 // Sends the quoted transaction (approving the token first if needed) and waits until it has arrived.
 // withLock wraps only the sending part (the source chain's wallet is busy), not the wait for arrival.
+// fees (optional): the fee fields to send with (when the gas for this very transaction was set aside from the amount).
 export async function lifiExecute(from: ChainClients, to: ChainClients, q: LifiQuote, fromToken: Address, amount: bigint, say: (s: string) => void,
-  withLock: <T>(f: () => Promise<T>) => Promise<T> = (f) => f()): Promise<string> {
+  withLock: <T>(f: () => Promise<T>) => Promise<T> = (f) => f(), fees: { maxFeePerGas?: bigint; maxPriorityFeePerGas?: bigint; gasPrice?: bigint } = {}): Promise<string> {
   const { pub, wallet, account } = from
   const hash = await withLock(async () => {
     if (fromToken !== NATIVE) {
@@ -43,7 +44,7 @@ export async function lifiExecute(from: ChainClients, to: ChainClients, q: LifiQ
       }
     }
     const t = q.raw.transactionRequest
-    const h = await wallet.sendTransaction({ account, chain: from.p.chain, to: t.to, data: t.data, value: BigInt(t.value ?? 0), ...(t.gasLimit ? { gas: BigInt(t.gasLimit) } : {}) })
+    const h = await wallet.sendTransaction({ account, chain: from.p.chain, to: t.to, data: t.data, value: BigInt(t.value ?? 0), ...(t.gasLimit ? { gas: BigInt(t.gasLimit) } : {}), ...fees } as any)
     const rc = await pub.waitForTransactionReceipt({ hash: h, timeout: 180_000 })
     if (rc.status !== 'success') throw new Error(`transaction reverted: ${h}`)
     return h

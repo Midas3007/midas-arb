@@ -4,6 +4,8 @@
 //   /chain base live   force a chain live (also: watch, off, auto = back to the automatic rules)
 //                      off = the chain does nothing at all (no scans), so the others run faster
 //   /chain all watch   every chain at once except live ones (watch, off or auto; live only one by one)
+//   /switch celo       move ALL money (cash and gas token) to celo, celo live, the others off (shows the plan first)
+//   /switch            pick the chain with buttons (gaps each chain saw in the last 24 h); /switch best = most gaps
 //   /only base         run only this chain: every other chain off (turn them back on with /chain <name> watch)
 //   /gaps              pools furthest from their peg right now
 //   /withdraw          sweep profit now (ignores SWEEP_AT_USD; the fee and $3 rules still apply)
@@ -15,6 +17,7 @@ import { CHAINS } from './chains.js'
 import type { Ctx } from './desk.js'
 import { freshState, LIFECYCLE } from './policy.js'
 import { treasuryRound } from './treasury.js'
+import { recentGaps, switchTo, switching } from './switch.js'
 
 const token = process.env.TELEGRAM_BOT_TOKEN ?? ''
 const chat = process.env.TELEGRAM_CHAT_ID ?? ''
@@ -55,6 +58,7 @@ const MAIN: Btn[][] = [
   [{ text: '📊 Status', callback_data: 'status' }, { text: '📡 Scans', callback_data: 'scans' }],
   [{ text: '🎯 Gaps', callback_data: 'gaps' }, { text: '⛓ Chains', callback_data: 'chains' }],
   [{ text: '💸 Withdraw', callback_data: 'withdraw?' }, { text: '⏯ Pause / Resume', callback_data: 'toggle' }],
+  [{ text: '🔀 Switch chain (move all money)', callback_data: 'switch' }],
 ]
 const back: Btn[] = [{ text: '« Menu', callback_data: 'menu' }]
 
@@ -75,6 +79,7 @@ export async function telegramLoop(ctx: Ctx, keys: string[]) {
     { command: 'gaps', description: 'Pools furthest from their peg' },
     { command: 'chains', description: 'Modes, and switch a chain' },
     { command: 'only', description: 'Run one chain only, e.g. /only base' },
+    { command: 'switch', description: 'Move all money to one chain, e.g. /switch celo' },
     { command: 'withdraw', description: 'Sweep profit now' },
     { command: 'pause', description: 'Stop new trades' },
     { command: 'resume', description: 'Restart trading' },
@@ -113,6 +118,31 @@ export async function telegramLoop(ctx: Ctx, keys: string[]) {
     await treasuryRound({ store: ctx.store, ledger: ctx.ledger, locks: ctx.locks, chains: keys.map((k) => CHAINS[k]), say: (x) => out.push(x) }, { go: ctx.live, forceSweep: true })
     return out.filter((l) => /sweep|profit|waiting|plan only|swept|set aside/i.test(l)).join('\n') || 'nothing to sweep'
   }
+  // /switch: plan first (quotes and costs), then a button to do it. The move runs in the background and reports here.
+  const tctx = () => ({ store: ctx.store, ledger: ctx.ledger, locks: ctx.locks, chains: keys.map((k) => CHAINS[k]) })
+  const pickText = () => {
+    const g = recentGaps(keys)
+    const best = keys.filter((k) => g[k].count > 0).sort((a, b) => g[b].count - g[a].count)[0]
+    const rows: Btn[][] = []
+    for (let i = 0; i < keys.length; i += 3) rows.push(keys.slice(i, i + 3).map((k) => ({ text: `${k} · ${g[k].count}`, callback_data: `switch:${k}` })))
+    if (best) rows.unshift([{ text: `🎯 most gaps: ${best} (${g[best].count})`, callback_data: `switch:${best}` }])
+    return { text: 'Move ALL money (cash and gas token) to which chain?\nNumber = gaps it saw in the last 24 h (only chains that were scanning). You see the plan and costs before anything moves.', markup: kb([...rows, back]) }
+  }
+  const planFor = async (k: string) => {
+    if (switching()) return { text: 'A switch is running; wait for its "Done" message.', markup: kb([back]) }
+    const text = await switchTo(tctx(), k, { go: false, say: () => {} }).catch((e) => `Could not plan: ${String(e?.message ?? e).split('\n')[0]}`)
+    const yes: Btn[][] = ctx.live ? [[{ text: `✅ Yes, move everything to ${k}`, callback_data: `switch!${k}` }, { text: 'Cancel', callback_data: 'menu' }]] : [[{ text: 'Cancel', callback_data: 'menu' }]]
+    return { text: ctx.live ? text : `${text}\n\n(HUNTER_LIVE=0: plan only, nothing can move)`, markup: kb([...yes, back]) }
+  }
+  const startSwitch = (k: string) => {
+    if (!ctx.live) return 'HUNTER_LIVE=0: nothing can move.'
+    if (switching()) return 'A switch is already running.'
+    switchTo(tctx(), k, { go: true, say: (s) => { console.log(`[switch] ${s}`); send(`🔀 ${s}`) } })
+      .catch((e) => send(`🔀 switch to ${k} failed: ${String(e?.message ?? e).split('\n')[0]}`))
+    return `🔀 Switching to ${k}. Progress messages follow; it usually takes a few minutes.`
+  }
+  const bestChain = () => { const g = recentGaps(keys); return keys.filter((k) => g[k].count > 0).sort((a, b) => g[b].count - g[a].count)[0] }
+
   const toggle = () => { S().paused = !S().paused; ctx.store.save(); return S().paused ? '⏸ Paused: no new trades (leftovers are still sold).' : '▶️ Resumed.' }
 
   // Buttons
@@ -143,6 +173,13 @@ export async function telegramLoop(ctx: Ctx, keys: string[]) {
     if (data === 'withdraw?') return edit(id, ctx.live ? 'Sweep profit to the withdrawal chain now?' : 'Watch only (HUNTER_LIVE=0): this shows the plan, nothing moves.', kb([[{ text: '✅ Yes, sweep', callback_data: 'withdraw!' }, { text: 'Cancel', callback_data: 'menu' }]]))
     if (data === 'withdraw!') { await edit(id, 'Sweeping…', kb([])); return edit(id, await withdraw()) }
     if (data === 'toggle') return edit(id, toggle(), kb(MAIN))
+    if (data === 'switch') { const p = pickText(); return edit(id, p.text, p.markup) }
+    if (data.startsWith('switch:')) {
+      const k = data.slice(7); if (!keys.includes(k)) return
+      await edit(id, `Planning the move to ${k}…`, kb([]))
+      const p = await planFor(k); return edit(id, p.text, p.markup)
+    }
+    if (data.startsWith('switch!')) { const k = data.slice(7); if (!keys.includes(k)) return; return edit(id, startSwitch(k), kb([back])) }
   }
 
   // Typed commands (still work, for muscle memory)
@@ -160,6 +197,14 @@ export async function telegramLoop(ctx: Ctx, keys: string[]) {
         if (k === 'all' && ['watch', 'off', 'auto'].includes(what ?? '')) return send(keys.map((x) => (S().chains[x].mode === 'live' ? `${x} stays live` : setChain(x, what))).join('\n'))
         if (!k || !keys.includes(k) || !['live', 'watch', 'off', 'auto'].includes(what ?? '')) return send(`usage: /chain <${keys.join('|')}> live|watch|off|auto\n       /chain all watch|off|auto`)
         return send(setChain(k, what))
+      }
+      case '/switch': {
+        let k = args[0]?.toLowerCase()
+        if (!k) { const p = pickText(); return send(p.text, p.markup) }
+        if (k === 'best') { k = bestChain(); if (!k) return send('No chain recorded a gap in the last 24 h (off chains do not scan). Try /chain all watch for a few hours first.') }
+        if (!keys.includes(k)) return send(`usage: /switch <${keys.join('|')}|best>`)
+        await send(`Planning the move to ${k}…`)
+        const p = await planFor(k); return send(p.text, p.markup)
       }
       case '/only': {
         const k = args[0]?.toLowerCase()

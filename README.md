@@ -241,6 +241,16 @@ Send `/menu` (or `/start`) for the **command panel**: buttons that update the sa
 | 💸 Withdraw · `/withdraw` | sweep profit now (asks to confirm) |
 | ⏯ Pause / Resume · `/pause` `/resume` | stop / restart new trades |
 
+**Switching chains:** `/switch celo` (or 🔀 in the menu) moves **all** the money to Celo: cash parked in Aave comes
+out, every chain's cash token is bridged to Celo's cash token and its gas token (less the gas of sending it) to
+CELO, through LI.FI's cheapest route. Celo goes live and the chains the money came from (and any other live
+chain) are switched off. You see the plan with each bridge's cost first and confirm with a button; progress
+messages follow. If no bridge offers the target's gas token, the gas token arrives as cash and $1 of the cash
+buys the target's gas instead. `/switch` alone shows buttons with the gaps each chain saw in the last 24 hours
+(`/switch best` picks the most). Money set aside for withdrawal stays put; leftover coins from a half-finished
+trade are sold on their own chain first (run `/switch` again to bring that cash over). The treasury pauses while
+a switch runs.
+
 The commands also appear in Telegram's "/" menu. Typed `/chain base live` still works, and so do `/only base`
 (every other chain off) and `/chain all watch|off|auto`.
 
