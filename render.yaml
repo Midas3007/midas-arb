@@ -1,0 +1,30 @@
+# Render Blueprint for the public FX quote API (no trading, no private key needed).
+# Render: New > Blueprint > pick this repo. Then set X402_PAY_TO (your own Base address) and PUBLIC_URL
+# (the https address Render gives the service) in its Environment tab.
+services:
+  - type: web
+    name: midas-fx-api
+    runtime: node
+    plan: starter # always on: directories check that paid endpoints keep answering, and history keeps recording
+    buildCommand: npm install
+    startCommand: npm run fx-api
+    healthCheckPath: /health
+    disk:
+      name: fx-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATA_DIR
+        value: /var/data
+      - key: X402_PRICE_USD
+        value: "0.01"
+      - key: X402_PAY_TO
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
+      - key: FX_API_KEYS
+        sync: false
+      - key: FX_RECORD_MIN
+        value: "5"

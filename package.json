@@ -15,7 +15,8 @@
     "forever": "sh scripts/forever.sh",
     "survey": "tsx src/hunter/survey.ts",
     "fx-api": "tsx src/hunter/fxserver.ts",
-    "survey-report": "tsx src/hunter/survey-report.ts"
+    "survey-report": "tsx src/hunter/survey-report.ts",
+    "fx-pay": "tsx src/hunter/fxpay.ts"
   },
   "dependencies": {
     "@celo/attribution-tags": "0.5.0",

@@ -148,15 +148,45 @@ as a web service as is), or inside the trading bot with `FX_API_PORT=8080`.
   previews. Pools priced more than 20% from the oracle are left out and listed under `excluded`.
 - **Oracle:** Mento's on-chain oracles plus two daily FX feeds (the official rate). For NGN and ARS, on-chain prices
   follow the market rate, so their spread against the oracle is large and steady; the response says so.
-- **Access:** `FX_API_KEYS=key1,key2` (sent as `x-api-key`) for customers on keys; `X402_PRICE_USD=0.005` makes
-  everyone else pay per call with **x402** (HTTP 402, USDC on Base, an EIP-3009 authorization). The server checks
-  the signature, the amount, the payee, the time window, the nonce and the payer's balance itself, then settles it
-  on-chain from the bot wallet (it pays the gas, about $0.002), so no facilitator account is needed. `X402_PAY_TO`:
-  where the USDC goes (default: the bot wallet). With neither set, it is open (for your own machine).
+- **Access:** `FX_API_KEYS=key1,key2` (sent as `x-api-key`) for customers on keys; `X402_PRICE_USD=0.01` makes
+  everyone else pay per call with **x402** (USDC on Base). Both protocol versions are spoken: v2 (`PAYMENT-REQUIRED`
+  / `PAYMENT-SIGNATURE` / `PAYMENT-RESPONSE`, network `eip155:8453`) and v1 (`X-PAYMENT`, the challenge in the 402
+  body). Payments settle through **PayAI's facilitator** (`X402_FACILITATOR_URL`, default
+  `https://facilitator.payai.network`; it pays the gas and needs no account), or through this server itself with
+  `X402_FACILITATOR_URL=self` (the bot wallet pays ~$0.002 gas a call, no directory listing). `X402_PAY_TO`: where
+  the USDC goes (your own address; required when the server has no `HUNTER_PRIVATE_KEY`, so money never goes to a
+  throwaway address). With neither keys nor a price, it is open (for your own machine).
 - **Limits:** 60 requests a minute per IP, sizes $1 to $1,000,000, answers cached for 10 seconds.
 
 It publishes what public smart contracts would execute at, computed from on-chain quotes, not bureau-de-change or
 parallel-market quotes. (Not legal advice; if you ever serve fiat quotes, ask a Nigerian lawyer first.)
+
+### Going public: so agents find it and pay
+
+Agents find paid APIs through directories that read machine-readable descriptions. The server publishes all of them:
+
+| What | Where | Read by |
+|---|---|---|
+| 402 challenge with the **Bazaar** extension (what the endpoint takes and returns, service name, tags) | every paid URL | x402 clients, the x402 Bazaar (via the facilitator), x402scan |
+| OpenAPI with `x-payment-info` (protocol x402, fixed price) | `/openapi.json` | x402scan (its first choice), API tools |
+| List of paid URLs | `/.well-known/x402` | x402scan |
+| Plain-language guide | `/llms.txt`, `/` | language-model agents, people |
+
+Steps:
+1. **Deploy** on Render with the blueprint in `render.yaml` (New > Blueprint > this repo; Starter plan, always on,
+   with a 1 GB disk for the history). Set `X402_PAY_TO` (your own Base address, e.g. your exchange deposit address
+   on Base or a wallet you control) and `PUBLIC_URL` (the `https://...onrender.com` address Render gives you).
+2. **Check it:** open `PUBLIC_URL/llms.txt`; `curl -i PUBLIC_URL/fx/NGN` must answer `402` with a `PAYMENT-REQUIRED`
+   header. x402scan's own checker: `npx -y @agentcash/discovery PUBLIC_URL -v`.
+3. **Register on x402scan:** https://www.x402scan.com/resources/register, enter `PUBLIC_URL`. It reads
+   `/openapi.json` and `/.well-known/x402` and lists every currency's endpoint.
+4. **Get into the Bazaar:** make one real paid call through PayAI: on your phone, `npm run fx-pay -- PUBLIC_URL/fx/NGN?size=1000`
+   (pays $0.01 from the bot wallet; its USDC on Base). PayAI catalogs an endpoint once a paid call carrying its
+   description settles; listings rank by traffic and drop when an endpoint stops answering.
+5. Watch `PUBLIC_URL/health` and the USDC arriving at `X402_PAY_TO`.
+
+What to expect: agent traffic on x402 is real but still small, so this earns per call, a little at first. The
+dataset (`/history`) gets more valuable every day it runs, and it is the part nobody else records.
 
 ## Chain lifecycle
 

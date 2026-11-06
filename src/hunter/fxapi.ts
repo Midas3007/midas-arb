@@ -12,17 +12,18 @@
 //
 // Access (any mix):
 //   FX_API_KEYS=key1,key2       callers sending x-api-key (or Authorization: Bearer) are served free
-//   X402_PRICE_USD=0.005        everyone else pays per call with x402 (HTTP 402, USDC on Base, EIP-3009). The server
-//                               checks the signed authorization itself and settles it on-chain from the bot wallet
-//                               (it pays the ~$0.002 gas), so no facilitator account is needed. X402_PAY_TO: where the
-//                               USDC goes (default: the bot wallet).
+//   X402_PRICE_USD=0.01         everyone else pays per call with x402 (USDC on Base; v2 and v1, see x402.ts), settled
+//                               by PayAI's facilitator (no account) or by this server (X402_FACILITATOR_URL=self).
+//                               X402_PAY_TO: where the USDC goes (required without HUNTER_PRIVATE_KEY).
 //   neither set                 open (for running it on your own machine)
+//
+// Discovery (free): / (a short page), /openapi.json (with x-payment-info, as x402scan reads it), /.well-known/x402
+// (the list of paid URLs), /llms.txt (for language-model agents). PUBLIC_URL=https://... sets the address they give.
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { erc20Abi, parseAbi, parseSignature, verifyTypedData, type Address, type Hex } from 'viem'
 import { DATA_DIR } from '../config.js'
-import { CHAINS } from './chains.js'
-import { clientsFor, hunterAccount } from './clients.js'
+import { hunterAccount } from './clients.js'
+import { acceptPayment, challenge, payConfig, type Endpoint } from './x402.js'
 import type { Ctx } from './desk.js'
 
 const n = (k: string, d: string) => Number(process.env[k] ?? d)
@@ -135,117 +136,142 @@ function history(ccy: string, hours: number, size?: number) {
   return out
 }
 
-// ---------- x402: pay per call in USDC on Base (exact scheme, EIP-3009), settled by this server ----------
-const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as Address
-const usdcAbi = parseAbi([
-  'function authorizationState(address authorizer, bytes32 nonce) view returns (bool)',
-  'function transferWithAuthorization(address from, address to, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce, uint8 v, bytes32 r, bytes32 s)',
-])
-const authTypes = { TransferWithAuthorization: [
-  { name: 'from', type: 'address' }, { name: 'to', type: 'address' }, { name: 'value', type: 'uint256' },
-  { name: 'validAfter', type: 'uint256' }, { name: 'validBefore', type: 'uint256' }, { name: 'nonce', type: 'bytes32' },
-] } as const
-const usedNonces = new Set<string>()
+// ---------- discovery: how agents and directories find and call this ----------
+const SERVICE = 'Midas FX Quotes' // 32 characters at most (Bazaar rule)
+const TAGS = ['fx', 'stablecoins', 'naira', 'onchain', 'quotes']
+const DESCRIPTION = 'Executable FX rates for currency stablecoins (cNGN, wBRL, wARS, EURC, XSGD, KESm...) on Celo, Base, BSC and Polygon: per exchange (Uniswap, Aerodrome, Pancake, Curve, Mento, Textile RFQ) the effective rate at your trade size, slippage, and spread against the official rate.'
+const EXAMPLE = {
+  ccy: 'NGN', size: 1000, asOf: '2026-11-06T09:33:51Z', oracle: { ratePerUsd: 1346.6, status: 'ok', sources: ['erapi', 'fawaz', 'mento'] },
+  venues: [{ chain: 'celo', coin: 'cNGN', venue: 'textile', buy: { rate: 1376.72, amount: 1376724.7, usd: 1000, spreadBps: -223.7, slippageBps: 0 }, sell: { rate: 1377.28, amount: 1346601.3, usd: 977.73, spreadBps: 227.8, slippageBps: 0 } }],
+  best: { buy: { chain: 'celo', coin: 'cNGN', venue: 'textile' }, sell: { chain: 'celo', coin: 'cNGN', venue: 'textile' } }, excluded: [], notes: [],
+}
+const HISTORY_EXAMPLE = { ccy: 'NGN', points: [{ ts: '2026-11-06T09:35:00Z', ccy: 'NGN', size: 1000, chain: 'celo', coin: 'cNGN', venue: 'textile', oracle: 1346.6, buy: 1376.72, sell: 1377.28 }] }
 
-function x402Requirements(resource: string) {
-  const price = BigInt(Math.round(n('X402_PRICE_USD', '0') * 1e6))
-  return {
-    scheme: 'exact', network: 'base', maxAmountRequired: price.toString(), resource, description: 'FX execution quote (per call)',
-    mimeType: 'application/json', payTo: (process.env.X402_PAY_TO || hunterAccount().address) as Address, maxTimeoutSeconds: 120,
-    asset: USDC_BASE, extra: { name: 'USD Coin', version: '2' },
-  }
+const baseUrl = (req: IncomingMessage) => (process.env.PUBLIC_URL?.replace(/\/$/, '') || `${String(req.headers['x-forwarded-proto'] ?? 'http').split(',')[0]}://${req.headers.host ?? 'localhost'}`)
+function endpointFor(base: string, ccy: string, history: boolean, url: string): Endpoint {
+  const q = new URL(url).searchParams, num = (k: string, d: number) => (Number(q.get(k)) > 0 ? Number(q.get(k)) : d)
+  const iconUrl = process.env.PUBLIC_URL ? `${base}/icon.png` : undefined
+  return history
+    ? { url, description: `Recorded ${ccy} rates per exchange ($100, $1,000, $10,000 every 5 minutes)`, serviceName: SERVICE, tags: TAGS, iconUrl,
+      queryParams: { hours: num('hours', 24), size: num('size', 1000) }, queryProps: { hours: { type: 'number', description: 'how far back, up to 168' }, size: { type: 'number', description: 'only this recorded size: 100, 1000 or 10000' } },
+      pathParams: { ccy }, pathProps: { ccy: { type: 'string', description: '3-letter currency code, e.g. NGN' } }, routeTemplate: '/fx/:ccy/history', outputExample: HISTORY_EXAMPLE }
+    : { url, description: `Executable ${ccy} rate per exchange at your trade size: effective rate, slippage, spread vs the official rate`, serviceName: SERVICE, tags: TAGS, iconUrl,
+      queryParams: { size: num('size', 1000) }, queryProps: { size: { type: 'number', description: 'trade size in USD, 1 to 1,000,000 (default 1000)' } },
+      pathParams: { ccy }, pathProps: { ccy: { type: 'string', description: '3-letter currency code, e.g. NGN, BRL, EUR, KES' } }, routeTemplate: '/fx/:ccy', outputExample: EXAMPLE }
 }
-// Checks the payment header; returns a function that settles it on-chain, or an error message.
-async function checkPayment(header: string, req: ReturnType<typeof x402Requirements>): Promise<{ settle: () => Promise<Hex>; payer: Address } | string> {
-  let p: any
-  try { p = JSON.parse(Buffer.from(header, 'base64').toString('utf8')) } catch { return 'X-PAYMENT is not base64 JSON' }
-  if (p?.scheme !== 'exact' || p?.network !== 'base') return 'only the exact scheme on base is accepted'
-  const a = p.payload?.authorization, sig = p.payload?.signature as Hex
-  if (!a || !sig) return 'missing authorization or signature'
-  const now = Math.floor(Date.now() / 1000)
-  if (String(a.to).toLowerCase() !== req.payTo.toLowerCase()) return 'payment goes to the wrong address'
-  if (BigInt(a.value) < BigInt(req.maxAmountRequired)) return 'payment too small'
-  if (Number(a.validAfter) > now || Number(a.validBefore) < now + 6) return 'authorization not valid now'
-  if (usedNonces.has(String(a.nonce).toLowerCase())) return 'nonce already used'
-  const message = { from: a.from, to: a.to, value: BigInt(a.value), validAfter: BigInt(a.validAfter), validBefore: BigInt(a.validBefore), nonce: a.nonce }
-  const ok = await verifyTypedData({ address: a.from, domain: { name: 'USD Coin', version: '2', chainId: 8453, verifyingContract: USDC_BASE }, types: authTypes, primaryType: 'TransferWithAuthorization', message, signature: sig }).catch(() => false)
-  if (!ok) return 'bad signature'
-  const c = clientsFor(CHAINS.base)
-  const [used, bal] = await Promise.all([
-    c.pub.readContract({ address: USDC_BASE, abi: usdcAbi, functionName: 'authorizationState', args: [a.from, a.nonce] }),
-    c.pub.readContract({ address: USDC_BASE, abi: erc20Abi, functionName: 'balanceOf', args: [a.from] }),
-  ])
-  if (used) return 'nonce already used'
-  if (bal < BigInt(a.value)) return 'payer has too little USDC'
-  usedNonces.add(String(a.nonce).toLowerCase())
-  const { r, s, v, yParity } = parseSignature(sig)
-  const args = [a.from, a.to, BigInt(a.value), BigInt(a.validAfter), BigInt(a.validBefore), a.nonce, Number(v ?? BigInt(27 + (yParity ?? 0))), r, s] as const
-  return {
-    payer: a.from,
-    settle: async () => {
-      const { request } = await c.pub.simulateContract({ account: c.account, address: USDC_BASE, abi: usdcAbi, functionName: 'transferWithAuthorization', args })
-      const hash = await c.wallet.writeContract(request as any)
-      await c.pub.waitForTransactionReceipt({ hash, timeout: 60_000 })
-      return hash
+function openapi(base: string, priceUsd: number | null, ctx: Ctx) {
+  const pay = priceUsd ? { 'x-payment-info': { protocols: ['x402'], price: { mode: 'fixed', currency: 'USD', amount: String(priceUsd) } } } : {}
+  const ccyParam = { name: 'ccy', in: 'path', required: true, schema: { type: 'string', enum: currencies(ctx).map((c) => c.ccy) }, description: '3-letter currency code' }
+  const paid = (summary: string, extra: object[], example: object) => ({
+    get: {
+      summary, parameters: [ccyParam, ...extra], ...pay,
+      responses: { 200: { description: 'OK', content: { 'application/json': { example } } }, ...(priceUsd ? { 402: { description: 'Payment required: x402, USDC on Base (PAYMENT-REQUIRED header; v1 challenge in the body)' } } : {}) },
     },
+  })
+  return {
+    openapi: '3.1.0',
+    info: { title: SERVICE, version: '1.0.0', description: `${DESCRIPTION} Computed from on-chain quotes and Textile RFQ previews; not bureau-de-change or parallel-market quotes.` },
+    servers: [{ url: base }],
+    paths: {
+      '/fx': { get: { summary: 'Currencies covered, their official rate and where each trades (free)', responses: { 200: { description: 'OK' } } } },
+      '/fx/{ccy}': paid('Executable rate per exchange at a trade size', [{ name: 'size', in: 'query', schema: { type: 'number', minimum: 1, maximum: 1_000_000, default: 1000 }, description: 'trade size in USD' }], EXAMPLE),
+      '/fx/{ccy}/history': paid('Recorded rates per exchange', [{ name: 'hours', in: 'query', schema: { type: 'number', maximum: 168, default: 24 } }, { name: 'size', in: 'query', schema: { type: 'number', enum: RECORD_SIZES } }], HISTORY_EXAMPLE),
+    },
+    components: { securitySchemes: { apiKey: { type: 'apiKey', in: 'header', name: 'x-api-key', description: 'for customers on a key instead of paying per call' } } },
   }
 }
+const llms = (base: string, priceUsd: number | null, ctx: Ctx) => `# ${SERVICE}
+
+> ${DESCRIPTION}
+
+Base URL: ${base}
+${priceUsd ? `Price: $${priceUsd} per call in USDC on Base, paid with x402 (v2 PAYMENT-SIGNATURE or v1 X-PAYMENT). The 402 response says how.` : 'Free.'}
+
+## Endpoints
+- GET ${base}/fx : currencies covered (free). Now: ${currencies(ctx).map((c) => c.ccy).join(', ') || 'loading'}
+- GET ${base}/fx/{CCY}?size=1000 : for buying and for selling {size} USD worth of the currency, per exchange: rate (currency units per USD), slippage against a $10 trade, spread against the official rate (bps), and the best exchange for each side
+- GET ${base}/fx/{CCY}/history?hours=24&size=1000 : the recorded series
+- ${base}/openapi.json, ${base}/.well-known/x402
+
+## Notes
+- Rates are what public contracts and Textile's makers would execute at, right now; nothing is reserved.
+- For NGN and ARS the official rate differs from where crypto trades, so spreads against it are large and steady.
+`
+const landing = (base: string, priceUsd: number | null, ctx: Ctx) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${SERVICE}</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:760px;margin:0 auto;padding:16px;background:#fff;color:#111}code,pre{background:#f3f3f3;border-radius:4px;padding:2px 4px}pre{padding:10px;overflow-x:auto}@media(prefers-color-scheme:dark){body{background:#111;color:#eee}code,pre{background:#222}}</style></head><body>
+<h1>${SERVICE}</h1><p>${DESCRIPTION}</p>
+<p>${priceUsd ? `<b>$${priceUsd} per call</b>, paid by agents with <a href="https://www.x402.org">x402</a> (USDC on Base). Teams can ask for an API key.` : 'Free.'}</p>
+<pre>GET ${base}/fx/NGN?size=50000</pre>
+<p>Currencies now: ${currencies(ctx).map((c) => `<code>${c.ccy}</code>`).join(' ') || 'loading'}</p>
+<p><a href="/openapi.json">openapi.json</a> · <a href="/llms.txt">llms.txt</a> · <a href="/.well-known/x402">.well-known/x402</a> · <a href="/fx">/fx</a></p>
+<p><small>On-chain execution data from public contracts and Textile RFQ previews, not bureau-de-change or parallel-market quotes.</small></p></body></html>`
 
 // ---------- the server ----------
 export function startFxApi(ctx: Ctx, port: number, say: (s: string) => void = console.log) {
   const keys = new Set((process.env.FX_API_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean))
-  const paid = n('X402_PRICE_USD', '0') > 0
+  const pc = payConfig(() => hunterAccount().address)
+  const pay = 'off' in pc ? null : pc
+  if ('off' in pc && process.env.X402_PRICE_USD) say(`x402 payments OFF: ${pc.off}`)
   const cache = new Map<string, { at: number; body: FxQuote }>()
   const hits = new Map<string, number[]>() // ip -> request times (60 a minute)
-  const json = (res: ServerResponse, code: number, body: unknown, headers: Record<string, string> = {}) => {
-    res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...headers })
-    res.end(JSON.stringify(body, null, 1))
+  const send = (res: ServerResponse, code: number, body: unknown, headers: Record<string, string> = {}, type = 'application/json') => {
+    res.writeHead(code, { 'Content-Type': type, 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', ...headers })
+    res.end(typeof body === 'string' ? body : JSON.stringify(body, null, 1))
   }
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     try {
-      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+      if (req.method === 'OPTIONS') return send(res, 204, '', { 'Access-Control-Allow-Methods': 'GET, OPTIONS' })
+      const url = new URL(req.url ?? '/', 'http://x')
+      const base = baseUrl(req)
       const ip = String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '').split(',')[0]
       const recent = (hits.get(ip) ?? []).filter((t) => Date.now() - t < 60_000)
-      if (recent.length >= 60) return json(res, 429, { error: 'rate limit: 60 requests a minute' })
+      if (recent.length >= 60) return send(res, 429, { error: 'rate limit: 60 requests a minute' })
       hits.set(ip, [...recent, Date.now()])
-      const parts = url.pathname.split('/').filter(Boolean)
-      if (url.pathname === '/health') return json(res, 200, { ok: true, chains: [...(ctx.fx?.keys() ?? [])] })
-      if (parts[0] !== 'fx') return json(res, 404, { error: 'see /fx' })
-      // Access: an API key, or an x402 payment, or open when neither is configured.
+      const path = url.pathname.replace(/\/$/, '') || '/'
+      // Free: the front door and the discovery documents.
+      if (path === '/') return send(res, 200, landing(base, pay?.priceUsd ?? null, ctx), {}, 'text/html; charset=utf-8')
+      if (path === '/health') return send(res, 200, { ok: true, chains: [...(ctx.fx?.keys() ?? [])], currencies: currencies(ctx).length })
+      if (path === '/openapi.json') return send(res, 200, openapi(base, pay?.priceUsd ?? null, ctx))
+      if (path === '/llms.txt') return send(res, 200, llms(base, pay?.priceUsd ?? null, ctx), {}, 'text/plain; charset=utf-8')
+      if (path === '/.well-known/x402' || path === '/.well-known/x402.json')
+        return send(res, 200, { version: 1, resources: currencies(ctx).flatMap((c) => [`${base}/fx/${c.ccy}`, `${base}/fx/${c.ccy}/history`]), instructions: `GET /fx/{CCY}?size=USD. Docs: ${base}/llms.txt` })
+      if (path === '/icon.png' && existsSync('docs/brand/peg-hunter-icon.png')) return send(res, 200, readFileSync('docs/brand/peg-hunter-icon.png') as any, { 'Cache-Control': 'max-age=86400' }, 'image/png')
+      const parts = path.split('/').filter(Boolean)
+      if (parts[0] !== 'fx' || parts.length > 3 || (parts.length === 3 && parts[2] !== 'history')) return send(res, 404, { error: 'not found; see /llms.txt' })
+      if (parts.length === 1) return send(res, 200, { currencies: currencies(ctx), quote: `${base}/fx/{CCY}?size=1000`, history: `${base}/fx/{CCY}/history?hours=24`, docs: `${base}/llms.txt` })
+      const ccy = parts[1].toUpperCase(), isHistory = parts[2] === 'history'
+      // Paid routes: an API key, or an x402 payment (checked before anything else, so a bare probe gets the 402).
       const key = String(req.headers['x-api-key'] ?? '').trim() || String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim()
-      let settle: (() => Promise<Hex>) | null = null
-      if (parts.length > 1 && !keys.has(key) && (keys.size || paid)) {
-        if (!paid) return json(res, 401, { error: 'API key required (x-api-key)' })
-        const reqs = x402Requirements(url.toString())
-        const header = String(req.headers['x-payment'] ?? '')
-        if (!header) return json(res, 402, { x402Version: 1, error: 'X-PAYMENT header is required', accepts: [reqs] })
-        const r = await checkPayment(header, reqs)
-        if (typeof r === 'string') return json(res, 402, { x402Version: 1, error: r, accepts: [reqs] })
+      let settle: (() => Promise<{ headers: Record<string, string> }>) | null = null
+      if (!keys.has(key) && (keys.size || pay)) {
+        if (!pay) return send(res, 401, { error: 'API key required (x-api-key)' })
+        const ep = endpointFor(base, ccy, isHistory, `${base}${url.pathname}${url.search}`)
+        if (!req.headers['payment-signature'] && !req.headers['x-payment']) { const ch = challenge(pay, ep, 'Payment required'); return send(res, 402, ch.body, ch.headers) }
+        const r = await acceptPayment(pay, ep, req.headers)
+        if (typeof r === 'string') { const ch = challenge(pay, ep, r); return send(res, 402, ch.body, ch.headers) }
         settle = r.settle
       }
       let body: unknown
-      if (parts.length === 1) body = { currencies: currencies(ctx), sizes: 'any; ?size=USD amount', history: 'GET /fx/<CCY>/history?hours=24&size=1000' }
+      if (!/^[A-Z]{3}$/.test(ccy)) return send(res, 400, { error: 'currency must be a 3-letter code, e.g. NGN' })
+      if (isHistory) body = { ccy, points: history(ccy, Math.min(168, Number(url.searchParams.get('hours') ?? '24')), Number(url.searchParams.get('size') ?? '0') || undefined) }
       else {
-        const ccy = parts[1].toUpperCase()
-        if (!/^[A-Z]{3}$/.test(ccy)) return json(res, 400, { error: 'currency must be a 3-letter code, e.g. NGN' })
-        if (parts[2] === 'history') body = { ccy, points: history(ccy, Math.min(168, Number(url.searchParams.get('hours') ?? '24')), Number(url.searchParams.get('size') ?? '0') || undefined) }
-        else {
-          const size = Number(url.searchParams.get('size') ?? '1000')
-          if (!(size >= 1 && size <= 1_000_000)) return json(res, 400, { error: 'size must be between 1 and 1,000,000 (USD)' })
-          if (!coinsOf(ctx, ccy).length) return json(res, 404, { error: `no ${ccy} coin on the chains served`, currencies: currencies(ctx).map((c) => c.ccy) })
-          const k = `${ccy}:${size}`, hit = cache.get(k)
-          body = hit && Date.now() - hit.at < CACHE_MS ? hit.body : (await fxQuote(ctx, ccy, size))
-          if (!hit || Date.now() - hit.at >= CACHE_MS) cache.set(k, { at: Date.now(), body: body as FxQuote })
-        }
+        const size = Number(url.searchParams.get('size') ?? '1000')
+        if (!(size >= 1 && size <= 1_000_000)) return send(res, 400, { error: 'size must be between 1 and 1,000,000 (USD)' })
+        if (!coinsOf(ctx, ccy).length) return send(res, 404, { error: `no ${ccy} coin on the chains served`, currencies: currencies(ctx).map((c) => c.ccy) })
+        const k = `${ccy}:${size}`, hit = cache.get(k)
+        if (hit && Date.now() - hit.at < CACHE_MS) body = hit.body
+        else { const q = await fxQuote(ctx, ccy, size); cache.set(k, { at: Date.now(), body: q }); body = q }
       }
-      if (settle) { // paid call: settle first, then answer (the receipt goes back in X-PAYMENT-RESPONSE)
-        const tx = await settle()
-        return json(res, 200, body, { 'X-PAYMENT-RESPONSE': Buffer.from(JSON.stringify({ success: true, transaction: tx, network: 'base' })).toString('base64') })
+      // Paid call: the payment settles after the answer is ready and before it is sent (no settlement, no answer).
+      if (settle) {
+        const s = await settle().catch((e) => e as Error)
+        if (s instanceof Error) { const ch = challenge(pay!, endpointFor(base, ccy, isHistory, `${base}${url.pathname}${url.search}`), s.message); return send(res, 402, ch.body, ch.headers) }
+        return send(res, 200, body, { ...s.headers, 'Access-Control-Expose-Headers': 'PAYMENT-RESPONSE, X-PAYMENT-RESPONSE' })
       }
-      return json(res, 200, body)
-    } catch (e: any) { json(res, 500, { error: String(e?.shortMessage ?? e?.message ?? e).split('\n')[0] }) }
+      return send(res, 200, body)
+    } catch (e: any) { send(res, 500, { error: String(e?.shortMessage ?? e?.message ?? e).split('\n')[0] }) }
   })
-  server.listen(port, () => say(`FX API on port ${port}: /fx, /fx/NGN?size=1000, /fx/NGN/history (${keys.size ? `${keys.size} API key(s)` : 'no keys'}${paid ? `, x402 $${process.env.X402_PRICE_USD} a call` : ''}${!keys.size && !paid ? ', open' : ''})`))
+  server.listen(port, () => say(`FX API on port ${port} (${keys.size ? `${keys.size} API key(s)` : 'no keys'}${pay ? `, x402 $${pay.priceUsd} a call to ${pay.payTo} via ${pay.facilitator === 'self' ? 'self-settlement' : pay.facilitator}` : ''}${!keys.size && !pay ? ', open to all' : ''})`))
   // History: every FX_RECORD_MIN minutes (0 = off).
   const every = n('FX_RECORD_MIN', '5') * 60_000
   if (every > 0) (async () => {
