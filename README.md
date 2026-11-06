@@ -12,9 +12,9 @@ Big bots skip pools with $2k of liquidity. That is where gaps of several percent
 fast doesn't matter here, and small capital is enough to take what is there.
 
 **Now an FX desk, like Kiyoshi (Nov 2026):** currency coins only (cNGN, wBRL, wARS, EURC, XSGD...; dollar coins are
-only stepping stones in paths, `FX_ONLY=0` to trade them), DEXes plus **Textile**, on the chains Textile serves at a
-cheap gas price: **Celo, Base, BSC**, plus **Polygon** for its DEX currency coins (`HUNTER_CHAINS=all` runs the
-other chains too). Kiyoshi's Textile rules apply: sell to Textile only if its firm quote still covers the cost
+only stepping stones in paths, `FX_ONLY=0` to trade them), DEXes plus **Textile**, on **Celo and Base** by default:
+the chains where a one-hour survey of all four cheap Textile chains found gaps or near-gaps (`HUNTER_CHAINS=celo,base,bsc,polygon`
+watches BSC and Polygon too; `all` runs every chain). Kiyoshi's Textile rules apply: sell to Textile only if its firm quote still covers the cost
 (otherwise the loss guard sells within 0.5%), and skip a Textile-first trade while Textile still holds the last
 trade's money. See [docs/FX_SURVEY.md](docs/FX_SURVEY.md) for which currencies have gaps, and the **FX quote API**
 section below.

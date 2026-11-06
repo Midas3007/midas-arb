@@ -1,10 +1,10 @@
 // The FX quote API on its own (no trading): `npm run fx-api`. Finds each chain's exchanges and pools, then answers
 // /fx requests and records the history (see fxapi.ts). Listens on PORT (Render sets it) or FX_API_PORT (8080).
-// Chains: FX_API_CHAINS, else HUNTER_CHAINS, else Celo, Base, BSC and Polygon.
+// Chains: FX_API_CHAINS, else Celo, Base, BSC and Polygon.
 import 'dotenv/config'
 process.env.DESK_QUOTE_ONLY = '1'
 process.env.HUNTER_LIVE = '0'
-import { CHAINS, DEFAULT_CHAINS } from './chains.js'
+import { API_CHAINS, CHAINS } from './chains.js'
 import { pruneRpcs } from './clients.js'
 import { runChain, type Ctx } from './desk.js'
 import { FairPrices } from './fair.js'
@@ -12,7 +12,7 @@ import { startFxApi } from './fxapi.js'
 import { PegBoard } from './peg.js'
 import { Ledger, Locks, Store } from './store.js'
 
-const keys = (process.env.FX_API_CHAINS ?? process.env.HUNTER_CHAINS ?? DEFAULT_CHAINS.join(',')).split(',').map((s) => s.trim().toLowerCase()).filter((k) => CHAINS[k])
+const keys = (process.env.FX_API_CHAINS ?? API_CHAINS.join(',')).split(',').map((s) => s.trim().toLowerCase()).filter((k) => CHAINS[k])
 let stopping = false
 process.on('SIGINT', () => { stopping = true; process.exit(0) })
 process.on('SIGTERM', () => { stopping = true; process.exit(0) })

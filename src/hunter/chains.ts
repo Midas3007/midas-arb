@@ -393,7 +393,8 @@ CHAINS.robinhood = {
   dexes: [uniV3('0x1f7d7550b1b028f7571e69a784071f0205fd2efa', '0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7', '0xcaf681a66d020601342297493863e78c959e5cb2', 200_000)],
 }
 
-// Which chains run: HUNTER_CHAINS=celo,base,... Default: the cheap-gas chains where Textile trades currency coins
-// (Celo, Base, BSC) plus Polygon (the most currency coins on DEXes). HUNTER_CHAINS=all runs every chain.
-export const DEFAULT_CHAINS = ['celo', 'base', 'bsc', 'polygon']
+// Which chains run: HUNTER_CHAINS=celo,base,... Default: Celo and Base, where the Nov 2026 survey found gaps or
+// near-gaps (docs/FX_SURVEY.md). HUNTER_CHAINS=all runs every chain. The FX quote API covers more (FX_API_CHAINS).
+export const DEFAULT_CHAINS = ['celo', 'base']
+export const API_CHAINS = ['celo', 'base', 'bsc', 'polygon']
 export const chainKeys = (): string[] => (process.env.HUNTER_CHAINS?.trim().toLowerCase() === 'all' ? Object.keys(CHAINS) : list(process.env.HUNTER_CHAINS, DEFAULT_CHAINS)).map((s) => s.toLowerCase())
