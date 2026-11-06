@@ -8,7 +8,7 @@
 | | What it is | Runs |
 |---|---|---|
 | **The FX desk** (`npm start`) | A trading bot in the style of Kiyoshi: it buys a currency coin where it is cheap and sells it where it is dear, on the same chain, between DEXes and **Textile**'s RFQ desk | on your phone (Termux), later on Render |
-| **Midas FX Quotes** (`npm run fx-api`) | A public API that tells agents what a currency trade will actually execute at, per venue and at their size. Agents pay $0.01 a call with x402 | live at **https://midas-fx-api.onrender.com** |
+| **Midas FX Quotes** (`npm run fx-api`) | A public API that tells agents what a currency trade will actually execute at, per venue and at their size. Agents pay $0.01 a call with x402, in USDC on Base or USDT/USDC on Celo | live at **https://midas-fx-api.onrender.com** |
 
 Both use the same exchange code, the same honest quotes and the same fair prices.
 
@@ -42,7 +42,8 @@ bureau-de-change or parallel-market quotes. (Not legal advice; if you ever serve
 ### Payments (x402)
 
 - **Per call:** `X402_PRICE_USD=0.01`. The 402 answer speaks both protocol versions: v2 (`PAYMENT-REQUIRED`,
-  `PAYMENT-SIGNATURE`, `PAYMENT-RESPONSE`, network `eip155:8453`) and v1 (`X-PAYMENT`, the challenge in the body).
+  `PAYMENT-SIGNATURE`, `PAYMENT-RESPONSE`, networks `eip155:8453` and, with Celo on, `eip155:42220`) and v1
+  (`X-PAYMENT`, the challenge in the body; Base only).
 - **Settlement:** through **PayAI's facilitator** by default (`X402_FACILITATOR_URL`; it pays the gas and needs no
   account), or by the server itself with `X402_FACILITATOR_URL=self` (the bot wallet pays ~$0.002 gas a call, and
   the endpoint is not catalogued).
@@ -83,7 +84,8 @@ runs) with a 1 GB disk for the history (`DATA_DIR=/var/data`). Set `X402_PAY_TO`
 address the discovery documents give; by default the request's own host) and `API_CONTACT_EMAIL` (shown publicly in
 `/openapi.json`; x402scan uses it to verify ownership). `FX_API_CHAINS` picks the chains (default Celo, Base, BSC,
 Polygon); `FX_RECORD_MIN` the history interval (5 minutes; 15 cuts the bot's outbound traffic to a third).
-`FX_API_PORT=8080` serves the same API from inside the trading bot instead.
+`FX_API_PORT=8080` serves the same API from inside the trading bot instead. For Celo, add `X402_CELO_API_KEY` (Celo
+payments) and, after `npm run register-agent`, `ERC8004_AGENT_ID`.
 
 Break-even is about 25 paid calls a day. Agent traffic is still small; a team on a monthly key is worth more than
 months of stray calls, and the recorded history is the part nobody else has.
