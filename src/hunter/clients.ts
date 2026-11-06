@@ -16,7 +16,9 @@ export function hunterAccount(): PrivateKeyAccount {
     if (process.env.HUNTER_LIVE === '1') throw new Error('Set HUNTER_PRIVATE_KEY in .env (make a new wallet with: npm run new-wallet)')
     // Watching only: a throwaway address is enough to read prices (it holds nothing and never sends).
     pk = generatePrivateKey()
-    console.log('No HUNTER_PRIVATE_KEY yet: watching with a throwaway address (nothing can be traded or moved).')
+    console.log(process.env.DESK_QUOTE_ONLY === '1'
+      ? 'No wallet key needed: price quotes are read with a throwaway address (this server never sends transactions; payments settle through the facilitator).'
+      : 'No HUNTER_PRIVATE_KEY yet: watching with a throwaway address (nothing can be traded or moved).')
   }
   // Peg Hunter must never share a wallet with Kiyoshi or the fund.
   for (const other of ['AGENT_PRIVATE_KEY', 'KIYOSHI_PRIVATE_KEY', 'FUND_PRIVATE_KEY'])
