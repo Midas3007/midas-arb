@@ -30,3 +30,7 @@ services:
         value: "5"
       - key: API_CONTACT_EMAIL # optional, shown publicly in /openapi.json (x402scan ownership check)
         sync: false
+      - key: X402_CELO_API_KEY # optional secret from x402.celo.org: also accept USDT/USDC on Celo
+        sync: false
+      - key: ERC8004_AGENT_ID # after npm run register-agent: the id it prints
+        sync: false

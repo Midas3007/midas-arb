@@ -46,11 +46,16 @@ bureau-de-change or parallel-market quotes. (Not legal advice; if you ever serve
 - **Settlement:** through **PayAI's facilitator** by default (`X402_FACILITATOR_URL`; it pays the gas and needs no
   account), or by the server itself with `X402_FACILITATOR_URL=self` (the bot wallet pays ~$0.002 gas a call, and
   the endpoint is not catalogued).
+- **Pay on Celo too:** with `X402_CELO_API_KEY` (from https://x402.celo.org: connect a wallet, sign a message, no
+  gas; new keys get free credits, then a balance pays gas plus 0.3% per settlement) the 402 also offers **USDT and
+  USDC on Celo**, settled through Celo's facilitator (`https://api.x402.celo.org`). Every Celo-paid call is a Celo
+  mainnet transaction. `X402_PAY_TO_CELO` if Celo payments should go to another address.
 - **Where the money goes:** `X402_PAY_TO`, your own Base address. Required when the server has no wallet key, so
   payments never go to a throwaway address. The API needs no private key and should not be given one.
 - **API keys:** `FX_API_KEYS=key1,key2` (sent as `x-api-key`) for teams on a monthly plan; they skip payment.
 - **Pay one call yourself:** `npm run fx-pay -- https://midas-fx-api.onrender.com/fx/NGN?size=1000` pays $0.01 from
-  the bot wallet (USDC on Base) and prints the receipt and the answer.
+  the bot wallet (USDC on Base) and prints the receipt and the answer; add `--celo` to pay in USDT on Celo
+  (`--celo --usdc` for USDC on Celo). No gas needed: the facilitator sends the transaction.
 
 ### How agents find it
 
@@ -60,6 +65,12 @@ bureau-de-change or parallel-market quotes. (Not legal advice; if you ever serve
 | OpenAPI with `x-payment-info` (free routes marked `security: []`) | `/openapi.json` | x402scan, API tools |
 | List of paid URLs | `/.well-known/x402` | x402scan |
 | Plain-language guide | `/llms.txt`, `/` | language-model agents, people |
+| ERC-8004 agent registration file | `/.well-known/agent-registration.json` | Celo's agent Identity Registry and its explorers |
+
+**ERC-8004 on Celo:** `npm run register-agent -- https://midas-fx-api.onrender.com` shows the cost (about 0.04 CELO
+of gas; the wallet must hold about 0.1 CELO) and `--go` registers the API in Celo's Identity Registry
+(`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`) from the bot wallet, pointing at the registration file. Then set
+`ERC8004_AGENT_ID` on Render to the id it prints, so the file lists the registration back.
 
 Listed in **PayAI's Bazaar** since the first paid call (6 Nov 2026). Register on **x402scan** at
 https://www.x402scan.com/resources/register and on **x402-list.com/submit**. Coinbase's Bazaar and Agentic.Market list
@@ -234,9 +245,10 @@ every 2 minutes (`-- celo,base --rounds 10 --every 30 --sizes 25,100,200`). Quot
 | `npm run report` | what each chain saw and earned (`-- 7` for a week) |
 | `npm run treasury`, `npm run withdraw` | one treasury round or a sweep, plan only (`-- --go` to do it) |
 | `npm run fx-api` | the FX quote API on its own |
-| `npm run fx-pay -- <url>` | pay one API call from the bot wallet |
+| `npm run fx-pay -- <url> [--celo]` | pay one API call from the bot wallet (USDC on Base, or USDT on Celo) |
+| `npm run register-agent -- <url> [--go]` | register the API in Celo's ERC-8004 agent registry |
 | `npm run survey`, `npm run survey-report` | the gap survey and its summary |
-| `npm test`, `npm run typecheck` | 45 tests: engine, peg guards, fair price, lifecycle, splitting, sweeping, parking, rewards |
+| `npm test`, `npm run typecheck` | 47 tests: engine, peg guards, fair price, lifecycle, splitting, sweeping, parking, rewards, x402 payments |
 
 Every setting is listed in `.env.example`.
 

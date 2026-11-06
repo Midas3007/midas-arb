@@ -184,12 +184,13 @@ function openapi(base: string, priceUsd: number | null, ctx: Ctx) {
     components: { securitySchemes: { apiKey: { type: 'apiKey', in: 'header', name: 'x-api-key', description: 'for customers on a key instead of paying per call' } } },
   }
 }
+let PAY_WITH = 'USDC on Base' // set at start: 'USDC on Base, or USDT or USDC on Celo' when Celo payments are on
 const llms = (base: string, priceUsd: number | null, ctx: Ctx) => `# ${SERVICE}
 
 > ${DESCRIPTION}
 
 Base URL: ${base}
-${priceUsd ? `Price: $${priceUsd} per call in USDC on Base, paid with x402 (v2 PAYMENT-SIGNATURE or v1 X-PAYMENT). The 402 response says how.` : 'Free.'}
+${priceUsd ? `Price: $${priceUsd} per call in ${PAY_WITH}, paid with x402 (v2 PAYMENT-SIGNATURE or v1 X-PAYMENT). The 402 response says how.` : 'Free.'}
 
 ## Endpoints
 - GET ${base}/fx : currencies covered (free). Now: ${currencies(ctx).map((c) => c.ccy).join(', ') || 'loading'}
@@ -204,11 +205,33 @@ ${priceUsd ? `Price: $${priceUsd} per call in USDC on Base, paid with x402 (v2 P
 const landing = (base: string, priceUsd: number | null, ctx: Ctx) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${SERVICE}</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:760px;margin:0 auto;padding:16px;background:#fff;color:#111}code,pre{background:#f3f3f3;border-radius:4px;padding:2px 4px}pre{padding:10px;overflow-x:auto}@media(prefers-color-scheme:dark){body{background:#111;color:#eee}code,pre{background:#222}}</style></head><body>
 <h1>${SERVICE}</h1><p>${DESCRIPTION}</p>
-<p>${priceUsd ? `<b>$${priceUsd} per call</b>, paid by agents with <a href="https://www.x402.org">x402</a> (USDC on Base). Teams can ask for an API key.` : 'Free.'}</p>
+<p>${priceUsd ? `<b>$${priceUsd} per call</b>, paid by agents with <a href="https://www.x402.org">x402</a> (${PAY_WITH}). Teams can ask for an API key.` : 'Free.'}</p>
 <pre>GET ${base}/fx/NGN?size=50000</pre>
 <p>Currencies now: ${currencies(ctx).map((c) => `<code>${c.ccy}</code>`).join(' ') || 'loading'}</p>
 <p><a href="/openapi.json">openapi.json</a> · <a href="/llms.txt">llms.txt</a> · <a href="/.well-known/x402">.well-known/x402</a> · <a href="/fx">/fx</a></p>
 <p><small>On-chain execution data from public contracts and Textile RFQ previews, not bureau-de-change or parallel-market quotes.</small></p></body></html>`
+
+// ERC-8004 agent registration file: the agentURI registered on Celo's Identity Registry, also served at
+// /.well-known/agent-registration.json as the domain proof. ERC8004_AGENT_ID, once registered (npm run
+// register-agent), adds the registration entry.
+export const ERC8004_REGISTRY_CELO = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432'
+function agentRegistration(base: string, priceUsd: number | null) {
+  const id = Number(process.env.ERC8004_AGENT_ID ?? '')
+  return {
+    type: 'https://eips.ethereum.org/EIPS/eip-8004#registration-v1',
+    name: SERVICE,
+    description: `${DESCRIPTION}${priceUsd ? ` $${priceUsd} per call in ${PAY_WITH}, paid with x402.` : ''} Call GET ${base}/fx/{CCY}?size=1000; docs at ${base}/llms.txt.`,
+    image: `${base}/icon.png`,
+    services: [
+      { name: 'web', endpoint: base },
+      ...(process.env.API_CONTACT_EMAIL ? [{ name: 'email', endpoint: process.env.API_CONTACT_EMAIL }] : []),
+    ],
+    x402Support: !!priceUsd,
+    active: true,
+    registrations: Number.isInteger(id) && id > 0 ? [{ agentId: id, agentRegistry: `eip155:42220:${ERC8004_REGISTRY_CELO}` }] : [],
+    supportedTrust: ['reputation'],
+  }
+}
 
 // ---------- the server ----------
 export function startFxApi(ctx: Ctx, port: number, say: (s: string) => void = console.log) {
@@ -237,6 +260,7 @@ export function startFxApi(ctx: Ctx, port: number, say: (s: string) => void = co
       if (path === '/health') return send(res, 200, { ok: true, chains: [...(ctx.fx?.keys() ?? [])], currencies: currencies(ctx).length })
       if (path === '/openapi.json') return send(res, 200, openapi(base, pay?.priceUsd ?? null, ctx))
       if (path === '/llms.txt') return send(res, 200, llms(base, pay?.priceUsd ?? null, ctx), {}, 'text/plain; charset=utf-8')
+      if (path === '/.well-known/agent-registration.json' || path === '/agent-registration.json') return send(res, 200, agentRegistration(base, pay?.priceUsd ?? null))
       if (path === '/.well-known/x402' || path === '/.well-known/x402.json')
         return send(res, 200, { version: 1, resources: currencies(ctx).flatMap((c) => [`${base}/fx/${c.ccy}`, `${base}/fx/${c.ccy}/history`]), instructions: `GET /fx/{CCY}?size=USD. Docs: ${base}/llms.txt` })
       if ((path === '/icon.png' || path === '/favicon.ico') && existsSync('docs/brand/peg-hunter-favicon.png')) return send(res, 200, readFileSync('docs/brand/peg-hunter-favicon.png'), { 'Cache-Control': 'max-age=86400' }, 'image/png') // 64x64
@@ -275,7 +299,8 @@ export function startFxApi(ctx: Ctx, port: number, say: (s: string) => void = co
       return send(res, 200, body)
     } catch (e: any) { send(res, 500, { error: String(e?.shortMessage ?? e?.message ?? e).split('\n')[0] }) }
   })
-  server.listen(port, () => say(`FX API on port ${port} (${keys.size ? `${keys.size} API key(s)` : 'no keys'}${pay ? `, x402 $${pay.priceUsd} a call to ${pay.payTo} via ${pay.facilitator === 'self' ? 'self-settlement' : pay.facilitator}` : ''}${!keys.size && !pay ? ', open to all' : ''})`))
+  if (pay?.celo) PAY_WITH = 'USDC on Base, or USDT or USDC on Celo'
+  server.listen(port, () => say(`FX API on port ${port} (${keys.size ? `${keys.size} API key(s)` : 'no keys'}${pay ? `, x402 $${pay.priceUsd} a call to ${pay.payTo} via ${pay.facilitator === 'self' ? 'self-settlement' : pay.facilitator}${pay.celo ? `; on Celo to ${pay.celo.payTo} via ${pay.celo.facilitator}` : ''}` : ''}${!keys.size && !pay ? ', open to all' : ''})`))
   // History: every FX_RECORD_MIN minutes (0 = off).
   const every = n('FX_RECORD_MIN', '5') * 60_000
   if (every > 0) (async () => {

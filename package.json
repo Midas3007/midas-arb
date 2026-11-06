@@ -16,7 +16,8 @@
     "survey": "tsx src/hunter/survey.ts",
     "fx-api": "tsx src/hunter/fxserver.ts",
     "survey-report": "tsx src/hunter/survey-report.ts",
-    "fx-pay": "tsx src/hunter/fxpay.ts"
+    "fx-pay": "tsx src/hunter/fxpay.ts",
+    "register-agent": "tsx src/hunter/register-agent.ts"
   },
   "dependencies": {
     "@celo/attribution-tags": "0.5.0",
