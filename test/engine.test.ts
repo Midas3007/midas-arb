@@ -105,11 +105,75 @@ test('pending inventory survives a restart and merges lots', () => {
   assert.equal(new PendingStore(file).get('cNGN'), undefined)
 })
 
-test('scanRoutes quotes a losing route once instead of running the size search', async () => {
+test('scanRoutes quotes a losing route only at its probe sizes (full, half, quarter), no size search', async () => {
   let calls = 0
   const counted = (v: Venue): Venue => ({ ...v, quote: (a, b, c) => { calls++; return v.quote(a, b, c) } })
   const losing = { X: 'wBRL' as TokenKey, buy: counted(rfq('a', 4.9)), sell: rfq('b', 5) }
   const [o] = await scanRoutes([losing], $(2), $(70), () => 0)
   assert.ok(o.edge < 0)
+  assert.equal(calls, 3)
+})
+
+test('buildRoutes: a venue that only buys a coin from you can still be the sell leg (one-way Textile corridor)', () => {
+  const dex = amm('dex', 1, 10_000), tex = rfq('textile', 1)
+  const canBuy = new Map([['dex', new Set(['VGBP'])], ['textile', new Set<string>()]])
+  const canSell = new Map([['dex', new Set(['VGBP'])], ['textile', new Set(['VGBP'])]])
+  const names = buildRoutes(canBuy, [dex, tex], canSell).map((r) => `${r.buy.name}>${r.sell.name}`)
+  assert.deepEqual(names, ['dex>textile'])
+})
+
+test('scanRoutes with a size hint quotes a losing route once, and a paying one at every size', async () => {
+  let calls = 0
+  const counted = (v: Venue): Venue => ({ ...v, quote: (a, b, c) => { calls++; return v.quote(a, b, c) } })
+  const losing = { X: 'wBRL' as TokenKey, buy: counted(rfq('a', 4.9)), sell: rfq('b', 5) }
+  const [o] = await scanRoutes([losing], $(2), $(70), () => 0, Infinity, () => $(70))
+  assert.ok(o.edge < 0)
   assert.equal(calls, 1)
+  const paying = { X: 'wBRL' as TokenKey, buy: rfq('a', 5.1), sell: rfq('b', 5) }
+  const [p] = await scanRoutes([paying], $(2), $(70), () => 0, Infinity, () => $(35))
+  assert.ok(p.edge > 0 && p.size === $(70)) // found the bigger size even though the hint was half
+})
+
+test('exit impact: sizes that push the exit pool more than the limit are not chosen', async () => {
+  const { exitImpactBps, scanRoutes } = await import('../src/engine.js')
+  // Buy pool is deep and 3% cheap; the exit pool is shallow ($500 a side), so bigger sizes move its price a lot.
+  const routes = [{ X: 'X', buy: amm('cheap', 1.03, 1_000_000), sell: amm('thin', 1, 500) }]
+  const free = await scanRoutes(routes, $(1), $(40), () => 0)
+  const capped = await scanRoutes(routes, $(1), $(40), () => 0, 100)
+  const probe = (await scanRoutes(routes, $(1), $(1), () => 0))[0]
+  assert.ok(exitImpactBps(capped[0], probe) <= 100)
+  assert.ok(exitImpactBps(free[0], probe) > 100)
+  assert.ok(capped[0].size < free[0].size)
+})
+
+test('prefilter keeps the profitable route and drops clearly losing ones', async () => {
+  const { prefilterRoutes, buildRoutes } = await import('../src/engine.js')
+  const cheap = amm('cheap', 1.02, 100_000), fair1 = amm('fair1', 1.0, 100_000), fair2 = amm('fair2', 1.0, 100_000)
+  const routes = buildRoutes(new Map([['cheap', new Set(['X'])], ['fair1', new Set(['X'])], ['fair2', new Set(['X'])]]), [cheap, fair1, fair2])
+  const kept = await prefilterRoutes(routes, $(1))
+  const names = kept.map((r) => `${r.buy.name}>${r.sell.name}`)
+  assert.ok(names.includes('cheap>fair1') && names.includes('cheap>fair2'))
+  assert.ok(!names.includes('fair1>cheap') && !names.includes('fair2>cheap'))
+})
+
+test('prefilter with a gas cost drops routes that cannot pay it, keeps the one that can', async () => {
+  const { prefilterRoutes, buildRoutes } = await import('../src/engine.js')
+  // flat venues: 'cheap' sells X 0.5% under the others; 'near' only 0.05% under (cannot pay $0.02 on $13.50)
+  const v = (name: string, px: number): Venue => ({ name, gas: 0, swap: fail, async quote(tin, _t, a) { const x = Number(a) / 1e6; return tin === 'USDT' ? $(x * px) : $(x / 1) } })
+  const cheap = v('cheap', 1.005), near = v('near', 1.0005), fair = v('fair', 1)
+  const routes = buildRoutes(new Map([['cheap', new Set(['X'])], ['near', new Set(['X'])], ['fair', new Set(['X'])]]), [cheap, near, fair])
+  const names = (await prefilterRoutes(routes, $(13.5), undefined, undefined, () => 0.03)).map((r) => `${r.buy.name}>${r.sell.name}`)
+  assert.ok(names.includes('cheap>fair'))
+  assert.ok(!names.includes('near>fair'))
+})
+
+test('a route that only pays at the big size is found (Textile prices big trades better)', async () => {
+  const { scanRoutes } = await import('../src/engine.js')
+  // Sell venue pays 0.1% more on trades of $150+ (like an RFQ desk's better price for size); buy pool is deep.
+  const tiered: Venue = { name: 'tiered', gas: 0, swap: fail, async quote(tin, _t, amt) {
+    const x = Number(amt) / 1e6
+    return tin === 'USDT' ? $(x) : $(x * (x >= 150 ? 1.0012 : 0.9995))
+  } }
+  const [o] = await scanRoutes([{ X: 'X', buy: amm('deep', 1, 10_000_000, 1), sell: tiered }], $(50), $(196), () => 0)
+  assert.ok(o.edge > 0 && o.size >= $(150))
 })

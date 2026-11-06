@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Peg Hunter</title>
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFD66B"/><stop offset="1" stop-color="#E09A1E"/>
+    </linearGradient>
+    <radialGradient id="coin" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#7CF5CB"/><stop offset="1" stop-color="#14A97A"/>
+    </radialGradient>
+    <radialGradient id="bg" cx="0.5" cy="0.4" r="0.75">
+      <stop offset="0" stop-color="#18233A"/><stop offset="1" stop-color="#0A0F1A"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- scope -->
+  <circle cx="256" cy="256" r="168" fill="none" stroke="url(#gold)" stroke-width="16"/>
+  <circle cx="256" cy="256" r="122" fill="none" stroke="#FFD66B" stroke-opacity="0.18" stroke-width="3"/>
+  <g stroke="#F2B53A" stroke-width="16" stroke-linecap="round">
+    <line x1="256" y1="56" x2="256" y2="128"/>
+    <line x1="256" y1="384" x2="256" y2="456"/>
+    <line x1="56" y1="256" x2="112" y2="256"/>
+    <line x1="400" y1="256" x2="456" y2="256"/>
+  </g>
+  <!-- the peg: fair price -->
+  <line x1="132" y1="256" x2="380" y2="256" stroke="#FFD66B" stroke-width="7" stroke-dasharray="16 12" stroke-linecap="round"/>
+  <!-- the off-peg coin, caught below the line -->
+  <path d="M256 290 l-22 24 M256 290 l22 24" stroke="#7CF5CB" stroke-width="9" stroke-linecap="round" fill="none"/>
+  <circle cx="256" cy="356" r="40" fill="url(#coin)"/>
+  <circle cx="256" cy="356" r="26" fill="none" stroke="#0A0F1A" stroke-opacity="0.35" stroke-width="5"/>
+</svg>
