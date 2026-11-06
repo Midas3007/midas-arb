@@ -170,10 +170,14 @@ function openapi(base: string, priceUsd: number | null, ctx: Ctx) {
   })
   return {
     openapi: '3.1.0',
-    info: { title: SERVICE, version: '1.0.0', description: `${DESCRIPTION} Computed from on-chain quotes and Textile RFQ previews; not bureau-de-change or parallel-market quotes.` },
+    info: {
+      title: SERVICE, version: '1.0.0', description: `${DESCRIPTION} Computed from on-chain quotes and Textile RFQ previews; not bureau-de-change or parallel-market quotes.`,
+      // API_CONTACT_EMAIL: shown publicly; x402scan uses it to verify ownership and let users reach you.
+      ...(process.env.API_CONTACT_EMAIL ? { contact: { email: process.env.API_CONTACT_EMAIL } } : {}),
+    },
     servers: [{ url: base }],
     paths: {
-      '/fx': { get: { summary: 'Currencies covered, their official rate and where each trades (free)', responses: { 200: { description: 'OK' } } } },
+      '/fx': { get: { summary: 'Currencies covered, their official rate and where each trades (free)', security: [], responses: { 200: { description: 'OK' } } } }, // security: [] = free, not probed for a 402
       '/fx/{ccy}': paid('Executable rate per exchange at a trade size', [{ name: 'size', in: 'query', schema: { type: 'number', minimum: 1, maximum: 1_000_000, default: 1000 }, description: 'trade size in USD' }], EXAMPLE),
       '/fx/{ccy}/history': paid('Recorded rates per exchange', [{ name: 'hours', in: 'query', schema: { type: 'number', maximum: 168, default: 24 } }, { name: 'size', in: 'query', schema: { type: 'number', enum: RECORD_SIZES } }], HISTORY_EXAMPLE),
     },
@@ -235,7 +239,7 @@ export function startFxApi(ctx: Ctx, port: number, say: (s: string) => void = co
       if (path === '/llms.txt') return send(res, 200, llms(base, pay?.priceUsd ?? null, ctx), {}, 'text/plain; charset=utf-8')
       if (path === '/.well-known/x402' || path === '/.well-known/x402.json')
         return send(res, 200, { version: 1, resources: currencies(ctx).flatMap((c) => [`${base}/fx/${c.ccy}`, `${base}/fx/${c.ccy}/history`]), instructions: `GET /fx/{CCY}?size=USD. Docs: ${base}/llms.txt` })
-      if (path === '/icon.png' && existsSync('docs/brand/peg-hunter-icon.png')) return send(res, 200, readFileSync('docs/brand/peg-hunter-icon.png') as any, { 'Cache-Control': 'max-age=86400' }, 'image/png')
+      if ((path === '/icon.png' || path === '/favicon.ico') && existsSync('docs/brand/peg-hunter-icon.png')) return send(res, 200, readFileSync('docs/brand/peg-hunter-icon.png') as any, { 'Cache-Control': 'max-age=86400' }, 'image/png')
       const parts = path.split('/').filter(Boolean)
       if (parts[0] !== 'fx' || parts.length > 3 || (parts.length === 3 && parts[2] !== 'history')) return send(res, 404, { error: 'not found; see /llms.txt' })
       if (parts.length === 1) return send(res, 200, { currencies: currencies(ctx), quote: `${base}/fx/{CCY}?size=1000`, history: `${base}/fx/{CCY}/history?hours=24`, docs: `${base}/llms.txt` })
