@@ -111,7 +111,10 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const pending = new PendingStore(`${dir}/pending.json`)
   const log = (file: string, o: object) => appendFileSync(`${dir}/${file}`, JSON.stringify({ ts: new Date().toISOString(), chain: p.key, ...o }) + '\n')
-  const TAG = (p.key === 'celo' && ATTRIBUTION_TAG ? toDataSuffix(ATTRIBUTION_TAG) : '0x') as Hex
+  // ERC-8021 attribution on every transaction the desk sends: <CHAIN>_BUILDER_CODE (Base: your Builder Code from
+  // api.base.dev, needed for Base's builder grants), else on Celo ATTRIBUTION_TAG. Contracts ignore the suffix.
+  const code = process.env[`${p.key.toUpperCase()}_BUILDER_CODE`] || (p.key === 'celo' ? ATTRIBUTION_TAG : '')
+  const TAG = (code ? toDataSuffix(code) : '0x') as Hex
   const T = p.tokens
   const rpc = limiter(Number(process.env[`${p.key.toUpperCase()}_RPC_CONCURRENCY`] ?? process.env.RPC_CONCURRENCY ?? p.rpcConcurrency ?? 8)) // quotes in flight at once on this chain
   const st = () => ctx.store.state.chains[p.key]
