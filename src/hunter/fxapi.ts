@@ -220,7 +220,7 @@ export function startFxApi(ctx: Ctx, port: number, say: (s: string) => void = co
   const hits = new Map<string, number[]>() // ip -> request times (60 a minute)
   const send = (res: ServerResponse, code: number, body: unknown, headers: Record<string, string> = {}, type = 'application/json') => {
     res.writeHead(code, { 'Content-Type': type, 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', ...headers })
-    res.end(typeof body === 'string' ? body : JSON.stringify(body, null, 1))
+    res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body, null, 1))
   }
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -239,7 +239,7 @@ export function startFxApi(ctx: Ctx, port: number, say: (s: string) => void = co
       if (path === '/llms.txt') return send(res, 200, llms(base, pay?.priceUsd ?? null, ctx), {}, 'text/plain; charset=utf-8')
       if (path === '/.well-known/x402' || path === '/.well-known/x402.json')
         return send(res, 200, { version: 1, resources: currencies(ctx).flatMap((c) => [`${base}/fx/${c.ccy}`, `${base}/fx/${c.ccy}/history`]), instructions: `GET /fx/{CCY}?size=USD. Docs: ${base}/llms.txt` })
-      if ((path === '/icon.png' || path === '/favicon.ico') && existsSync('docs/brand/peg-hunter-icon.png')) return send(res, 200, readFileSync('docs/brand/peg-hunter-icon.png') as any, { 'Cache-Control': 'max-age=86400' }, 'image/png')
+      if ((path === '/icon.png' || path === '/favicon.ico') && existsSync('docs/brand/peg-hunter-favicon.png')) return send(res, 200, readFileSync('docs/brand/peg-hunter-favicon.png'), { 'Cache-Control': 'max-age=86400' }, 'image/png') // 64x64
       const parts = path.split('/').filter(Boolean)
       if (parts[0] !== 'fx' || parts.length > 3 || (parts.length === 3 && parts[2] !== 'history')) return send(res, 404, { error: 'not found; see /llms.txt' })
       if (parts.length === 1) return send(res, 200, { currencies: currencies(ctx), quote: `${base}/fx/{CCY}?size=1000`, history: `${base}/fx/{CCY}/history?hours=24`, docs: `${base}/llms.txt` })
