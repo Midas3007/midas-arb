@@ -14,6 +14,7 @@ import { Ledger, Locks, Store } from './store.js'
 import { statusText, telegramLoop } from './telegram.js'
 import { treasuryRound } from './treasury.js'
 import { switching } from './switch.js'
+import { startFxApi } from './fxapi.js'
 import { inflight } from './inflight.js'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -34,6 +35,7 @@ const ctx: Ctx = {
   live,
   status: new Map(),
   stopping: () => stopping,
+  fx: new Map(),
 }
 
 // Fair prices first (the desks need them), then keep them fresh.
@@ -70,6 +72,9 @@ if (live) (async () => {
     await sleep(every)
   }
 })()
+
+// The FX quote API inside the trading bot (optional): FX_API_PORT=8080. `npm run fx-api` runs it without trading.
+if (process.env.FX_API_PORT) startFxApi(ctx, Number(process.env.FX_API_PORT))
 
 telegramLoop(ctx, keys).catch((e) => console.log(`telegram stopped: ${e?.message ?? e}`))
 

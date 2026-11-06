@@ -114,6 +114,14 @@ test('scanRoutes quotes a losing route only at its probe sizes (full, half, quar
   assert.equal(calls, 3)
 })
 
+test('buildRoutes: a venue that only buys a coin from you can still be the sell leg (one-way Textile corridor)', () => {
+  const dex = amm('dex', 1, 10_000), tex = rfq('textile', 1)
+  const canBuy = new Map([['dex', new Set(['VGBP'])], ['textile', new Set<string>()]])
+  const canSell = new Map([['dex', new Set(['VGBP'])], ['textile', new Set(['VGBP'])]])
+  const names = buildRoutes(canBuy, [dex, tex], canSell).map((r) => `${r.buy.name}>${r.sell.name}`)
+  assert.deepEqual(names, ['dex>textile'])
+})
+
 test('scanRoutes with a size hint quotes a losing route once, and a paying one at every size', async () => {
   let calls = 0
   const counted = (v: Venue): Venue => ({ ...v, quote: (a, b, c) => { calls++; return v.quote(a, b, c) } })

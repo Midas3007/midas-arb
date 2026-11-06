@@ -27,6 +27,7 @@ export type TextileVenue = Venue & { pools: Map<string, number[]>; addrs: Map<st
 export function textileVenue(o: {
   api: string
   reactor: Address
+  executor?: Address // VaultOrderExecutor: settles quotes filled from a maker's vault
   rpc: <T>(f: () => Promise<T>) => Promise<T>
   chainId: number
   account: PrivateKeyAccount
@@ -108,6 +109,7 @@ export function textileVenue(o: {
       const raw = o.toRaw(tin, amt), sellToken = o.T[tin].address, buyToken = o.T[tout].address
       for (let i = 0; (await o.balanceOf(tin)) < raw; i++) { if (i >= 15) throw new Error(`not enough ${tin} for Textile`); await sleep(1000) }
       await o.ensureAllowance(tin, o.reactor, raw) // before quoting, so the quote window is not spent on approvals
+      if (o.executor) await o.ensureAllowance(tin, o.executor, raw) // a quote may fill from a maker's vault instead
       let q: any
       for (let i = 0; ; i++) {
         try {
@@ -121,17 +123,22 @@ export function textileVenue(o: {
           break
         } catch (e: any) {
           const msg = String(e.message)
+          // Buying from Textile (it goes first): if Textile still has the last trade's money reserved, skip the trade
+          // (Kiyoshi's rule) after one short retry for a lagging node; waiting would let the gap move.
+          if (msg.includes('insufficient_funds') && tin === 'USDT' && i >= 1) throw new Error('Textile still holds funds from the last trade; skipped')
           if (i < 3 && msg.includes('insufficient_funds')) { // a lagging node, or funds still reserved by an earlier quote
             const m = msg.match(/"retryAfterMs":(\d+)/)
-            await sleep(m ? Math.min(Number(m[1]) + 2000, 120_000) : 3000)
+            await sleep(tin === 'USDT' ? 3000 : m ? Math.min(Number(m[1]) + 2000, 120_000) : 3000)
             continue
           }
           throw e
         }
       }
       if (q.status === 'no_quote') throw new Error(`Textile no quote: ${q.reason}`)
-      const reactor = String(q.quote.reactor).toLowerCase()
-      if (reactor !== o.reactor.toLowerCase() || String(q.transactions.swap.to).toLowerCase() !== reactor) throw new Error(`unexpected Textile reactor ${q.quote.reactor}; refusing`)
+      // The transaction must go to Textile's reactor, or to its vault executor for a vault fill; anything else is refused.
+      const known = [o.reactor, o.executor].filter(Boolean).map((a) => a!.toLowerCase())
+      const to = String(q.transactions.swap.to).toLowerCase()
+      if (!known.includes(to)) throw new Error(`unexpected Textile settlement contract ${q.transactions.swap.to}; refusing`)
       if (BigInt(q.quote.buyAmount) < o.toRaw(tout, minOut)) throw new Error('Textile firm quote below the minimum')
       if (Date.now() >= Date.parse(q.quote.expiresAt) - 3_000) throw new Error('Textile quote expired')
       const r = await o.send(q.transactions.swap.to as Address, q.transactions.swap.data as Hex)

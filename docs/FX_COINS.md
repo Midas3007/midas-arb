@@ -84,12 +84,22 @@ street rate: cNGN sat 1.6-2.0% "cheap" on every chain and at Textile, and wARS a
 trips are unaffected (they compare two real prices). The depeg guard allows them wider limits (NGN 5%, ARS 12%;
 `DEPEG_PCT_CCY`).
 
-## Textile per chain (docs.textilecredit.com/protocol/address-book)
+## Textile per chain (its own price ladder, `GET /v2/rfq/levels`, 6 Nov 2026)
 
-| Chain | Reactor | Live corridors | In Peg Hunter |
-|---|---|---|---|
-| Celo | 0xa9AA0a64… | cNGN, USDC, wARS, wBRL, IDRX, wCOP, wMXN, CELO, WETH, USAT, G$ ↔ USDT; cNGN ↔ G$ | yes |
-| Base | 0xEb5A29F8… | cNGN, TESOURO, ZARU ↔ USDC | yes (cNGN, ZARU) |
-| BSC | 0xe03261c0… | cNGN ↔ USDT | yes |
-| Polygon | 0xF3ffCF21… | TESOURO ↔ USDT | no (bond) |
-| Ethereum | 0x26A1aeda… | WETH, wBRL, BRS ↔ USDT | no (gas) |
+Textile's API accepts 6 mainnet chains (Ethereum, BSC, Polygon, Base, Celo, Robinhood Chain) and refuses every other
+chain asked (Optimism, Arbitrum, Avalanche, Gnosis, Sei, Unichain, Linea, Scroll, Sonic and more). "Both ways" means
+it quotes buying and selling; "sells to Textile" means it only buys the coin from you (still a Kiyoshi route:
+buy on a DEX, sell to Textile). Sizes are what its makers offered at that moment.
+
+| Chain | Both ways (against USDT; USDC on Base) | Sells to Textile only | No size offered now | In Midas-arb |
+|---|---|---|---|---|
+| Celo | cNGN (to $82k), wBRL ($20k), wARS ($9.9k), wCOP ($2.9k), IDRX ($341), USAT, USDC, CELO, WETH | VGBP, VCHF, wMXN (~$15) | G$ | all currency coins with a DEX pool: cNGN, wBRL, wARS, VGBP, VCHF (wCOP, IDRX, wMXN have no DEX pool) |
+| Base | cNGN (to $11k) | ZARU (~$10), ZARP (~$1), nTZS (~$10) | TESOURO (bond) | cNGN; ZARU, nTZS added (no DEX pool yet) |
+| BSC | cNGN (to $789k) | | | cNGN |
+| Polygon | | | TESOURO (bond) | DEX currency coins only |
+| Ethereum | BRS (small), cNGN (buy to $26) | ZARP, AUDD, XAUE->XAUt | WETH, wBRL, AUDX, JPYdf | no (gas $1-5 a swap) |
+| Robinhood Chain | none | | | no currency coins |
+
+Settlement contracts (Textile's address book): the LimitOrderReactor on every chain, plus a VaultOrderExecutor on
+Celo (0x01b006d5...), BSC (0x23d61C82...) and Polygon (0x16806490...) for quotes filled from a maker's vault.
+Midas-arb approves and accepts both; any other contract in a quote is refused.

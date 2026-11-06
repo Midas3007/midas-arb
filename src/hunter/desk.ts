@@ -38,8 +38,18 @@ export type ChainStatus = {
   parkedUsd: number; apyPct: number // cash earning interest in Aave, and its rate
   lastScanAt: number; lastLine: string; error?: string
 }
+// What a chain's desk offers to the survey and the FX quote API: its exchanges (each quotes the best path it has),
+// its coins, and the gas price. Amounts are the engine's: the cash token in 6 decimals, coins in raw units.
+export type FxDesk = {
+  chain: string; cashName: string
+  venues: () => Venue[]
+  coins: () => { X: string; ccy: string; decimals: number }[]
+  gasUsd: (units: number) => Promise<number>
+}
+
 export type Ctx = {
   store: Store; ledger: Ledger; fair: FairPrices; board: PegBoard; locks: Locks
+  fx?: Map<string, FxDesk> // filled by each desk once its exchanges are found
   live: boolean // HUNTER_LIVE=1
   status: Map<string, ChainStatus>
   stopping: () => boolean
@@ -64,6 +74,7 @@ const CHASE_MS = n('CHASE_SEC', '5') * 1000 // chase mode: re-check a coin with 
 const CHASE_MAX_MS = n('CHASE_MAX_MIN', '10') * 60_000 // ...for at most this long
 const PREFILTER_FROM = n('PREFILTER_FROM', '20')
 const APPROVAL_MULT = n('APPROVAL_MULT', '25')
+const FX_ONLY = process.env.FX_ONLY !== '0'
 const JUNK_PCT = n('JUNK_PCT', '5') // a route losing more than this at every test size is muted for a while...
 const JUNK_MUTE_MS = n('JUNK_MUTE_MIN', '60') * 60_000 // ...this long (or until a new pool / rediscovery)
 const QUIET_PCT = n('QUIET_PCT', '0.5') // a chain whose best route stays further than this from profit scans less often
@@ -375,7 +386,10 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   if (p.textile) venues.push(textileVenue({ ...p.textile, rpc, statsFile: `${dir}/textile.json`, chainId: p.chain.id, account, T, toRaw, fromRaw, send, ensureAllowance, balanceOf: (t) => balanceOf(t) }))
   if (!venues.length) { status.error = `no exchanges found on ${p.key}`; say(status.error); return }
   // Tradable coins: every pegged token except the cash token (other dollar coins included: they depeg too).
-  const corridors = () => Object.keys(T).filter((k) => k !== 'USDT' && T[k].ccy)
+  // FX only (default, like Kiyoshi): currency coins (cNGN, wBRL, EURC...) are traded; dollar coins (USDC, USDT.b...)
+  // are only stepping stones in paths. FX_ONLY=0 trades dollar coins too (their gaps were mostly traps).
+  const corridors = () => Object.keys(T).filter((k) => k !== 'USDT' && T[k].ccy && (!FX_ONLY || T[k].ccy !== 'USD'))
+  const heldCoins = () => Object.keys(T).filter((k) => k !== 'USDT' && T[k].ccy) // leftovers of any kind are sold
   const ccyOf = (X: string) => T[X]?.ccy ?? 'USD'
 
   const watcher = new PoolWatcher(pub as any, n(`${p.key.toUpperCase()}_WATCH_MS`, String(p.watchMs ?? process.env.WATCH_MS ?? 1500)))
@@ -390,17 +404,21 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const mentoCount = await Promise.all(venues.filter((v) => v.name === 'mento').map(disc))
     const others = await Promise.all(venues.filter((v) => v.name !== 'mento').map(disc))
     const counts = venues.map((v) => (v.name === 'mento' ? mentoCount.shift()! : others.shift()!))
-    const supported = new Map<string, Set<string>>()
-    await Promise.all(venues.map(async (v) => {
-      const set = new Set<string>()
-      await Promise.all(corridors().map(async (X) => {
-        const got = await v.quote('USDT', X, 1_000_000n)
-        if (got && (await v.quote(X, 'USDT', got))) set.add(X)
-      }))
-      supported.set(v.name, set)
+    // Which exchange can buy and which can sell each coin, tested with $5 (Textile's minimums are just over $1, so a
+    // $1 test missed wBRL, wCOP and IDRX on Celo). Buying and selling are tested apart: some Textile corridors only
+    // buy from you (VGBP, VCHF, wMXN on Celo; ZARU, nTZS on Base), and "buy on Uniswap, sell to Textile" still works.
+    const canBuy = new Map<string, Set<string>>(venues.map((v) => [v.name, new Set<string>()]))
+    const canSell = new Map<string, Set<string>>(venues.map((v) => [v.name, new Set<string>()]))
+    await Promise.all(corridors().map(async (X) => {
+      const got = await Promise.all(venues.map((v) => v.quote('USDT', X, 5_000_000n).catch(() => null)))
+      venues.forEach((v, i) => { if (got[i] && got[i]! > 0n) canBuy.get(v.name)!.add(X) })
+      const ref = got.reduce<bigint>((a, b) => (b && b > a ? b : a), 0n)
+      if (ref === 0n) return
+      const back = await Promise.all(venues.map((v) => v.quote(X, 'USDT', ref).catch(() => null)))
+      venues.forEach((v, i) => { if (back[i] && back[i]! > 0n) canSell.get(v.name)!.add(X) })
     }))
     watcher.set(venues.flatMap((v) => [...v.addrs]))
-    routes = buildRoutes(supported, venues)
+    routes = buildRoutes(canBuy, venues, canSell)
     let inside = 0
     for (const v of venues) {
       const lanes = lanesOf.get(v) ?? []
@@ -473,7 +491,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   let holding = false
   async function flatten() {
     holding = false
-    for (const X of corridors()) {
+    for (const X of heldCoins()) {
       const bal = await balanceOf(X).catch(() => 0n)
       if (bal === 0n) { pending.clear(X); continue }
       const exit = await bestExit(X, bal)
@@ -780,6 +798,21 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   }
 
   status.started = true
+  ctx.fx?.set(p.key, {
+    chain: p.key, cashName: p.cashName,
+    venues: () => venues,
+    coins: () => status.tokens.map((X) => ({ X, ccy: ccyOf(X), decimals: T[X].decimals })),
+    gasUsd,
+  })
+  // Quote-only (the survey, or a server that only answers /fx): find the exchanges and pools, then just serve quotes.
+  if (process.env.DESK_QUOTE_ONLY === '1') {
+    await discover()
+    while (!ctx.stopping()) {
+      await sleep(30_000)
+      if (Date.now() - discoveredAt > 6 * 3_600_000 || (retryDiscoverAt && Date.now() > retryDiscoverAt)) await discover().catch(() => {})
+    }
+    return
+  }
   say(`${ctx.live ? 'LIVE switch on' : 'WATCH ONLY (HUNTER_LIVE=0)'} | mode ${st().mode} | wallet ${account.address} | cash ${p.cashName} | ${venues.map((v) => v.name).join(' + ')}${added.length ? ` | coins: ${added.join(' ')}` : ''}`)
   // MODE both (default): full scan every INTERVAL, and rescan as soon as a watched pool trades.
   const intervalMs = n(`${p.key.toUpperCase()}_INTERVAL_SEC`, String(p.intervalSec ?? INTERVAL_MS / 1000)) * 1000

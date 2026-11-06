@@ -18,13 +18,14 @@ export const usdOf = (v: bigint) => Number(v) / 1e6 // USDT has 6 decimals
 export const routeKey = (r: Route) => `${r.X}:${r.buy.name}>${r.sell.name}`
 export const routeName = (r: Route) => `${r.X} ${r.buy.name}->${r.sell.name}`
 
-// Every ordered pair of different venues that can both trade X.
-export function buildRoutes(supported: Map<string, Set<TokenKey>>, venues: Venue[]): Route[] {
+// Every ordered pair of different venues where the first can buy X and the second can sell it.
+// sellable (optional): which venues can sell each coin, when that differs from what they can buy (one-way corridors).
+export function buildRoutes(supported: Map<string, Set<TokenKey>>, venues: Venue[], sellable: Map<string, Set<TokenKey>> = supported): Route[] {
   const out: Route[] = []
   const tokens = new Set<TokenKey>()
   for (const set of supported.values()) for (const t of set) tokens.add(t)
   for (const X of tokens) for (const buy of venues) for (const sell of venues) {
-    if (buy !== sell && supported.get(buy.name)?.has(X) && supported.get(sell.name)?.has(X)) out.push({ X, buy, sell })
+    if (buy !== sell && supported.get(buy.name)?.has(X) && sellable.get(sell.name)?.has(X)) out.push({ X, buy, sell })
   }
   return out
 }

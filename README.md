@@ -11,6 +11,14 @@ deeper pool (or Mento / Textile on Celo, which trade at real FX rates).
 Big bots skip pools with $2k of liquidity. That is where gaps of several percent can sit for minutes, so being
 fast doesn't matter here, and small capital is enough to take what is there.
 
+**Now an FX desk, like Kiyoshi (Nov 2026):** currency coins only (cNGN, wBRL, wARS, EURC, XSGD...; dollar coins are
+only stepping stones in paths, `FX_ONLY=0` to trade them), DEXes plus **Textile**, on the chains Textile serves at a
+cheap gas price: **Celo, Base, BSC**, plus **Polygon** for its DEX currency coins (`HUNTER_CHAINS=all` runs the
+other chains too). Kiyoshi's Textile rules apply: sell to Textile only if its firm quote still covers the cost
+(otherwise the loss guard sells within 0.5%), and skip a Textile-first trade while Textile still holds the last
+trade's money. See [docs/FX_SURVEY.md](docs/FX_SURVEY.md) for which currencies have gaps, and the **FX quote API**
+section below.
+
 > Peg Hunter replaces the Kiyoshi v2 FX desk that used to live in this repo. The previous version is commit
 > `66ac813` on `main`; to tag it: `git tag kiyoshi-v2-final 66ac813 && git push origin kiyoshi-v2-final`.
 
@@ -121,6 +129,34 @@ sale reverted ("Exchange resulted in fewer coins than expected"). Peg Hunter now
 
 A pool can still find other ways to tell a quote from a trade, so a first trade on a never-traded pool is the
 riskiest one; leftovers are always dollar or currency coins the loss guard can sell.
+
+## FX quote API: what a currency trade would actually get
+
+The desks already price every currency coin on every exchange at any size. The same quotes are served over HTTP:
+
+```
+GET /fx                          currencies covered, their oracle rate, and where each trades
+GET /fx/NGN?size=50000           per exchange: effective NGN per USD for buying and for selling $50,000 worth,
+                                 slippage against a $10 trade there, spread against the oracle rate, the best of each
+GET /fx/NGN/history?hours=24     the recorded series ($100, $1,000, $10,000 every 5 minutes, FX_RECORD_MIN)
+```
+
+Run it on its own with `npm run fx-api` (no trading; it listens on `PORT` or `FX_API_PORT`, so it deploys to Render
+as a web service as is), or inside the trading bot with `FX_API_PORT=8080`.
+
+- **Venues:** every DEX the desks know (Uniswap v3/v4, Aerodrome, Pancake, Curve, Mento...) and Textile's RFQ
+  previews. Pools priced more than 20% from the oracle are left out and listed under `excluded`.
+- **Oracle:** Mento's on-chain oracles plus two daily FX feeds (the official rate). For NGN and ARS, on-chain prices
+  follow the market rate, so their spread against the oracle is large and steady; the response says so.
+- **Access:** `FX_API_KEYS=key1,key2` (sent as `x-api-key`) for customers on keys; `X402_PRICE_USD=0.005` makes
+  everyone else pay per call with **x402** (HTTP 402, USDC on Base, an EIP-3009 authorization). The server checks
+  the signature, the amount, the payee, the time window, the nonce and the payer's balance itself, then settles it
+  on-chain from the bot wallet (it pays the gas, about $0.002), so no facilitator account is needed. `X402_PAY_TO`:
+  where the USDC goes (default: the bot wallet). With neither set, it is open (for your own machine).
+- **Limits:** 60 requests a minute per IP, sizes $1 to $1,000,000, answers cached for 10 seconds.
+
+It publishes what public smart contracts would execute at, computed from on-chain quotes, not bureau-de-change or
+parallel-market quotes. (Not legal advice; if you ever serve fiat quotes, ask a Nigerian lawyer first.)
 
 ## Chain lifecycle
 

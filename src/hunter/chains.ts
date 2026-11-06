@@ -47,7 +47,9 @@ export type ChainProfile = {
   v4?: V4Config // Uniswap v4: standard (hookless) pools, one venue per fee tier
   lfj?: LfjConfig // LFJ (Trader Joe) Liquidity Book on Avalanche
   mento?: { broker: Address; hub: string } // Celo: Mento, oracle-priced exchange; trades `hub` (USDm) for each currency
-  textile?: { api: string; reactor: Address } // Celo: Textile FX, RFQ market makers quoting at real FX rates
+  // Textile FX: RFQ market makers quoting at real FX rates. executor: the VaultOrderExecutor, which settles quotes
+  // filled from a maker's vault instead of the reactor (BSC, Celo, Polygon; docs.textilecredit.com address book).
+  textile?: { api: string; reactor: Address; executor?: Address }
   dexes: Dex[]
 }
 
@@ -105,6 +107,8 @@ export const CHAINS: Record<string, ChainProfile> = {
       BRLA: peg('0xfecb3f7c54e2caae9dc6ac9060a822d47e053760', 'BRL', 'BRLA'),
       USAT: peg('0xd2ab3c9a02dbbab236bfec45d1d755df4267f771', 'USD', 'USAT'),
       IDRX: peg('0x18bc5bcc660cf2b9ce3cd51a404afe1a0cbd3c22', 'IDR', 'IDRX'),
+      VGBP: peg('0x7ae4265ecfc1f31bc0e112dfcfe3d78e01f4bb7f', 'GBP', 'VGBP'), // VNX pound; Textile buys it (rfq/levels, Nov 2026)
+      VCHF: peg('0xc5ebea9984c485ec5d58ca5a2d376620d93af871', 'CHF', 'VCHF'), // VNX franc; Textile buys it
       wCOP: peg('0x8a1D45e102e886510e891d2Ec656a708991e2D76', 'COP', 'WCOP'), // Textile corridor
       wMXN: peg('0x337E7456B420bD3481e7FA61fA9850343d610d34', 'MXN', 'WMXN'), // Textile corridor
       ...envPegs('celo'),
@@ -112,7 +116,7 @@ export const CHAINS: Record<string, ChainProfile> = {
     // Every other currency Mento lists (NGNm, ZARm, CADm, AUDm...) is added from Mento's Broker at startup.
     mento: { broker: (process.env.MENTO_BROKER ?? '0x777A8255cA72412f0d706dc03C9D1987306B4CaD') as Address, hub: 'USDm' },
     // docs.textilecredit.com/protocol/address-book (Celo 42220)
-    textile: { api: process.env.TEXTILE_API ?? 'https://api.textilecredit.com', reactor: '0xa9AA0a64769cBed4d3B1Ceb4Df01CdE915C235b3' },
+    textile: { api: process.env.TEXTILE_API ?? 'https://api.textilecredit.com', reactor: '0xa9AA0a64769cBed4d3B1Ceb4Df01CdE915C235b3', executor: '0x01b006d5c687bde182aa36F542f1f014144742e2' },
     curve: 'celo', aave: '0x3E59A31363E2ad014dcbc521c4a0d5757d9f3402',
     v4: { poolManager: '0x288dc841A52FCA2707c6947B3A777c5E56cd87BC', quoter: '0x28566da1093609182dff2cb2a91cfd72e61d66cd', routers: ['0xe2023F3FA515cF070e07fD9d51c1d236e07843f4', '0x8b844f885672f333bc0042cb669255f93a4c1e6b'], permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3' }, // docs.uniswap.org v4 deployments
     dexes: [uniV3('0xAfE208a311B21f13EF87E33A90049fC17A7acDEc', '0x82825d0554fA07f7FC52Ab63c961F330fdEFa8E8', '0x5615CDAb10dc425a742d643d949a7F474C01abc4', 200_000)],
@@ -147,6 +151,7 @@ export const CHAINS: Record<string, ChainProfile> = {
       EURe: peg('0xbf6e2966A9C3D99C9E4D069E04f7Bdb9C8aa762C', 'EUR', 'EURE'),
       wARS: peg('0x0DC4F92879B7670e5f4e4e6e3c801D229129D90D', 'ARS', 'WARS'),
       ZARU: peg('0xE205b4e7Ac03E3f7b2060C3EDf2171AA7126C0d5', 'ZAR', 'ZARU'), // Textile corridor (launched 2026; little supply yet)
+      nTZS: peg('0xf476ba983de2f1ad532380630e2cf1d1b8b10688', 'TZS', 'NTZS'), // Tanzanian shilling; address from Textile's rfq/levels
       ...envPegs('base'),
     },
     curve: 'base', aave: '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5',
@@ -185,7 +190,7 @@ export const CHAINS: Record<string, ChainProfile> = {
     },
     curve: 'bsc', aave: '0x6807dc923806fE8Fd134338EABCA509979a7e0cB',
     // Textile's reactor on bsc (docs.textilecredit.com/protocol/address-book)
-    textile: { api: process.env.TEXTILE_API ?? 'https://api.textilecredit.com', reactor: '0xe03261c0436DB575F92F09EdDF3591E2566B7D97' },
+    textile: { api: process.env.TEXTILE_API ?? 'https://api.textilecredit.com', reactor: '0xe03261c0436DB575F92F09EdDF3591E2566B7D97', executor: '0x23d61C82e1c38a6f115d4f5a8807f88d271E05b4' },
     v4: { poolManager: '0x28e2ea090877bf75740558f6bfb36a5ffee9e9df', quoter: '0x95C086d7fE28AdD842ee220fef225a777474d781', routers: ['0xDc264714F68d84CF29BC605589405E78bDBE7C9f', '0x8b844f885672f333bc0042cb669255f93a4c1e6b'], permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3' }, // docs.uniswap.org v4 deployments
     dexes: [
       { name: 'pancake', factory: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', quoter: '0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997',
@@ -388,5 +393,7 @@ CHAINS.robinhood = {
   dexes: [uniV3('0x1f7d7550b1b028f7571e69a784071f0205fd2efa', '0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7', '0xcaf681a66d020601342297493863e78c959e5cb2', 200_000)],
 }
 
-// Which chains run: HUNTER_CHAINS=celo,base,... (default: all of them).
-export const chainKeys = (): string[] => list(process.env.HUNTER_CHAINS, Object.keys(CHAINS)).map((s) => s.toLowerCase())
+// Which chains run: HUNTER_CHAINS=celo,base,... Default: the cheap-gas chains where Textile trades currency coins
+// (Celo, Base, BSC) plus Polygon (the most currency coins on DEXes). HUNTER_CHAINS=all runs every chain.
+export const DEFAULT_CHAINS = ['celo', 'base', 'bsc', 'polygon']
+export const chainKeys = (): string[] => (process.env.HUNTER_CHAINS?.trim().toLowerCase() === 'all' ? Object.keys(CHAINS) : list(process.env.HUNTER_CHAINS, DEFAULT_CHAINS)).map((s) => s.toLowerCase())
