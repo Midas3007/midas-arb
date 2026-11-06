@@ -11,8 +11,8 @@ deeper pool (or Mento / Textile on Celo, which trade at real FX rates).
 Big bots skip pools with $2k of liquidity. That is where gaps of several percent can sit for minutes, so being
 fast doesn't matter here, and small capital is enough to take what is there.
 
-**Now an FX desk, like Kiyoshi (Nov 2026):** currency coins only (cNGN, wBRL, wARS, EURC, XSGD...; dollar coins are
-only stepping stones in paths, `FX_ONLY=0` to trade them), DEXes plus **Textile**, on **Celo and Base** by default:
+**Now an FX desk, like Kiyoshi (Nov 2026):** currency coins only (cNGN, wBRL, wARS, EURC, XSGD...; dollar coins such as USAT
+and USDC only against Textile, as Kiyoshi does: `TEXTILE_USD=0` drops them, `FX_ONLY=0` trades them everywhere), DEXes plus **Textile**, on **Celo and Base** by default:
 the chains where a one-hour survey of all four cheap Textile chains found gaps or near-gaps (`HUNTER_CHAINS=celo,base,bsc,polygon`
 watches BSC and Polygon too; `all` runs every chain). Kiyoshi's Textile rules apply: sell to Textile only if its firm quote still covers the cost
 (otherwise the loss guard sells within 0.5%), and skip a Textile-first trade while Textile still holds the last

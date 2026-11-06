@@ -75,6 +75,7 @@ const CHASE_MAX_MS = n('CHASE_MAX_MIN', '10') * 60_000 // ...for at most this lo
 const PREFILTER_FROM = n('PREFILTER_FROM', '20')
 const APPROVAL_MULT = n('APPROVAL_MULT', '25')
 const FX_ONLY = process.env.FX_ONLY !== '0'
+const TEXTILE_USD = process.env.TEXTILE_USD !== '0'
 const JUNK_PCT = n('JUNK_PCT', '5') // a route losing more than this at every test size is muted for a while...
 const JUNK_MUTE_MS = n('JUNK_MUTE_MIN', '60') * 60_000 // ...this long (or until a new pool / rediscovery)
 const QUIET_PCT = n('QUIET_PCT', '0.5') // a chain whose best route stays further than this from profit scans less often
@@ -374,9 +375,12 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     const codes = await Promise.all([v4.poolManager, v4.quoter, v4.permit2, ...v4.routers].map((a) => pub.getCode({ address: a }).catch(() => undefined)))
     const has = (i: number) => !!codes[i] && codes[i] !== '0x'
     const router = v4.routers.find((_, i) => has(3 + i))
-    if (has(0) && has(1) && has(2) && router)
-      for (const tier of V4_TIERS) venues.push(v4Venue({ v4, router, tier, bases: ['USDT', ...p.hubs], pub, T, me: account.address, rpc, toRaw, fromRaw, send, ensureAllowance }))
-    else say('skipping uniswap-v4: contracts not found')
+    if (has(0) && has(1) && has(2) && router) {
+      // Standard tiers, the chain's known extra ones, and <CHAIN>_V4_TIERS=fee:tickSpacing,... from .env.
+      const envTiers = (process.env[`${p.key.toUpperCase()}_V4_TIERS`] ?? '').split(',').filter(Boolean).map((t) => t.split(':').map(Number) as [number, number]).filter(([f, s]) => f >= 0 && s > 0)
+      const tiers = [...V4_TIERS, ...(v4.extraTiers ?? []), ...envTiers].filter((t, i, a) => a.findIndex((u) => u[0] === t[0] && u[1] === t[1]) === i)
+      for (const tier of tiers) venues.push(v4Venue({ v4, router, tier, bases: ['USDT', ...p.hubs], pub, T, me: account.address, rpc, toRaw, fromRaw, send, ensureAllowance }))
+    } else say('skipping uniswap-v4: contracts not found')
   }
   if (p.lfj) {
     const codes = await Promise.all([p.lfj.quoter, p.lfj.router].map((a) => pub.getCode({ address: a }).catch(() => undefined)))
@@ -386,9 +390,11 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
   if (p.textile) venues.push(textileVenue({ ...p.textile, rpc, statsFile: `${dir}/textile.json`, chainId: p.chain.id, account, T, toRaw, fromRaw, send, ensureAllowance, balanceOf: (t) => balanceOf(t) }))
   if (!venues.length) { status.error = `no exchanges found on ${p.key}`; say(status.error); return }
   // Tradable coins: every pegged token except the cash token (other dollar coins included: they depeg too).
-  // FX only (default, like Kiyoshi): currency coins (cNGN, wBRL, EURC...) are traded; dollar coins (USDC, USDT.b...)
-  // are only stepping stones in paths. FX_ONLY=0 trades dollar coins too (their gaps were mostly traps).
-  const corridors = () => Object.keys(T).filter((k) => k !== 'USDT' && T[k].ccy && (!FX_ONLY || T[k].ccy !== 'USD'))
+  // FX only (default, like Kiyoshi): currency coins (cNGN, wBRL, EURC...) are traded; dollar coins (USDC, USAT...)
+  // only against Textile, as Kiyoshi does (Textile's firm RFQ quotes can't be a trap pool; USAT Textile -> Uniswap paid
+  // ~$0.03 a trade on 1 Nov). TEXTILE_USD=0: no dollar coins at all. FX_ONLY=0: dollar coins on every route.
+  const corridors = () => Object.keys(T).filter((k) => k !== 'USDT' && T[k].ccy && (!FX_ONLY || T[k].ccy !== 'USD' || (!!p.textile && TEXTILE_USD)))
+  const allowed = (r: Route) => !FX_ONLY || T[r.X]?.ccy !== 'USD' || r.buy.name === 'textile' || r.sell.name === 'textile'
   const heldCoins = () => Object.keys(T).filter((k) => k !== 'USDT' && T[k].ccy) // leftovers of any kind are sold
   const ccyOf = (X: string) => T[X]?.ccy ?? 'USD'
 
@@ -418,7 +424,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       venues.forEach((v, i) => { if (back[i] && back[i]! > 0n) canSell.get(v.name)!.add(X) })
     }))
     watcher.set(venues.flatMap((v) => [...v.addrs]))
-    routes = buildRoutes(canBuy, venues, canSell)
+    routes = buildRoutes(canBuy, venues, canSell).filter(allowed)
     let inside = 0
     for (const v of venues) {
       const lanes = lanesOf.get(v) ?? []
@@ -431,7 +437,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
         }
         laneSupport.set(venue.name, set)
       }
-      const r = buildRoutes(laneSupport, lanes.map((l) => l.venue))
+      const r = buildRoutes(laneSupport, lanes.map((l) => l.venue)).filter(allowed)
       inside += r.length
       routes.push(...r)
     }

@@ -9,7 +9,8 @@ import { encodeAbiParameters, encodeFunctionData, encodePacked, parseAbi, zeroAd
 import type { Token } from './chains.js'
 import type { HopVenue } from './hop.js'
 
-export type V4Config = { poolManager: Address; quoter: Address; routers: Address[]; permit2: Address }
+// extraTiers: non-standard [fee, tickSpacing] pairs where a chain's currency pools live (Base cNGN/USDC: 0.15%/30).
+export type V4Config = { poolManager: Address; quoter: Address; routers: Address[]; permit2: Address; extraTiers?: [number, number][] }
 type PoolKey = { currency0: Address; currency1: Address; fee: number; tickSpacing: number; hooks: Address }
 export const V4_TIERS: [number, number][] = [[100, 1], [500, 10], [3000, 60], [10000, 200]]
 

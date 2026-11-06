@@ -158,7 +158,7 @@ export const CHAINS: Record<string, ChainProfile> = {
     solidly: [{ name: 'aerodrome-v2', router: '0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43', factory: '0x420DD381b31aEf6683db6B902084cB0FFECe40Da' }],
     // Textile's reactor on base (docs.textilecredit.com/protocol/address-book)
     textile: { api: process.env.TEXTILE_API ?? 'https://api.textilecredit.com', reactor: '0xEb5A29F869FF084B3Fce18d3487a38A56feDC59E' },
-    v4: { poolManager: '0x498581ff718922c3f8e6a244956af099b2652b2b', quoter: '0xE1A6C5803e3c44368b171BD680c7D32dfc92CA47', routers: ['0xd6145b2D3F379919E8CdEda7B97e37c4b2Ca9c40', '0xfdf682f51fe81aa4898f0ae2163d8a55c127fbc7'], permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3' }, // docs.uniswap.org v4 deployments
+    v4: { poolManager: '0x498581ff718922c3f8e6a244956af099b2652b2b', quoter: '0xE1A6C5803e3c44368b171BD680c7D32dfc92CA47', routers: ['0xd6145b2D3F379919E8CdEda7B97e37c4b2Ca9c40', '0xfdf682f51fe81aa4898f0ae2163d8a55c127fbc7'], permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3', extraTiers: [[1500, 30]] }, // docs.uniswap.org v4 deployments; 0.15%/30: cNGN/USDC ($84k, Nov 2026)
     dexes: [
       uniV3('0x33128a8fC17869897dcE68Ed026d694621f6FDfD', '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a', '0x2626664c2603336E57B271c5C0b26F421741e481'),
       slipstream('aerodrome', '0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A', '0x254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0', '0xBE6D8f0d05cC4be24d5167a3eF062215bE6D18a5'),
