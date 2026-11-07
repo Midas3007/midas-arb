@@ -29,6 +29,7 @@ import type { Ctx } from './desk.js'
 const n = (k: string, d: string) => Number(process.env[k] ?? d)
 const REF_USD = 10 // slippage is measured against a trade of this size on the same exchange
 const RECORD_SIZES = [100, 1_000, 10_000]
+const RECORD_MIN = Math.max(0, Number(process.env.FX_RECORD_MIN ?? 30) || 0) // 0 = off. Every recording is hundreds of RPC calls (the main outbound traffic), so not too often
 const CACHE_MS = 10_000
 const SUSPECT_BPS = n('SUSPICIOUS_PCT', '20') * 100 // further than this from the oracle: an empty or broken pool, left out
 const sig = (x: number, d = 6) => Number(x.toPrecision(d))
@@ -62,7 +63,9 @@ export function currencies(ctx: Ctx) {
 
 // The quote engine. Buy: spend `size` dollars of the chain's cash token on the coin. Sell: sell the amount of the coin
 // worth `size` dollars at the oracle rate. Rates are in currency units per dollar (NGN per USD).
-export async function fxQuote(ctx: Ctx, ccy: string, size: number): Promise<FxQuote> {
+// light (the history recorder): no $10 reference quotes, so no slippage figures; half the calls.
+// Only exchanges that quoted the coin at discovery are asked, so no request goes out that cannot be answered.
+export async function fxQuote(ctx: Ctx, ccy: string, size: number, light = false): Promise<FxQuote> {
   const f = ctx.fair.get(ccy)
   const oracle = f.usdPer ? 1 / f.usdPer : null
   const rows: VenueRow[] = []
@@ -71,11 +74,13 @@ export async function fxQuote(ctx: Ctx, ccy: string, size: number): Promise<FxQu
     const unit = 10 ** c.decimals
     const sellUnits = oracle ? size * oracle : null
     await Promise.all(d.venues().map(async (v) => {
+      const can = d.supports(v.name, c.X)
+      if (!can.buy && !can.sell) return
       const [b, bRef, s, sRef] = await Promise.all([
-        v.quote('USDT', c.X, BigInt(Math.round(size * 1e6))).catch(() => null),
-        v.quote('USDT', c.X, BigInt(REF_USD * 1e6)).catch(() => null),
-        sellUnits ? v.quote(c.X, 'USDT', BigInt(Math.round(sellUnits * unit))).catch(() => null) : null,
-        oracle ? v.quote(c.X, 'USDT', BigInt(Math.round(REF_USD * oracle * unit))).catch(() => null) : null,
+        can.buy ? v.quote('USDT', c.X, BigInt(Math.round(size * 1e6))).catch(() => null) : null,
+        can.buy && !light ? v.quote('USDT', c.X, BigInt(REF_USD * 1e6)).catch(() => null) : null,
+        can.sell && sellUnits ? v.quote(c.X, 'USDT', BigInt(Math.round(sellUnits * unit))).catch(() => null) : null,
+        can.sell && oracle && !light ? v.quote(c.X, 'USDT', BigInt(Math.round(REF_USD * oracle * unit))).catch(() => null) : null,
       ])
       let buy: SideQuote | null = null, sell: SideQuote | null = null
       if (b && b > 0n) {
@@ -117,7 +122,7 @@ export async function recordOnce(ctx: Ctx) {
   if (!existsSync(histDir())) mkdirSync(histDir(), { recursive: true })
   const ts = new Date().toISOString()
   for (const c of currencies(ctx)) for (const size of RECORD_SIZES) {
-    const q = await fxQuote(ctx, c.ccy, size).catch(() => null)
+    const q = await fxQuote(ctx, c.ccy, size, true).catch(() => null)
     if (!q) continue
     const lines = q.venues.map((r) => JSON.stringify({ ts, ccy: c.ccy, size, chain: r.chain, coin: r.coin, venue: r.venue, oracle: q.oracle.ratePerUsd, buy: r.buy?.rate ?? null, sell: r.sell?.rate ?? null }))
     if (lines.length) appendFileSync(histFile(ts.slice(0, 10)), lines.join('\n') + '\n')
@@ -152,7 +157,7 @@ function endpointFor(base: string, ccy: string, history: boolean, url: string): 
   const q = new URL(url).searchParams, num = (k: string, d: number) => (Number(q.get(k)) > 0 ? Number(q.get(k)) : d)
   const iconUrl = process.env.PUBLIC_URL ? `${base}/icon.png` : undefined
   return history
-    ? { url, description: `Recorded ${ccy} rates per exchange ($100, $1,000, $10,000 every 5 minutes)`, serviceName: SERVICE, tags: TAGS, iconUrl,
+    ? { url, description: `Recorded ${ccy} rates per exchange ($100, $1,000, $10,000 every ${RECORD_MIN} minutes)`, serviceName: SERVICE, tags: TAGS, iconUrl,
       queryParams: { hours: num('hours', 24), size: num('size', 1000) }, queryProps: { hours: { type: 'number', description: 'how far back, up to 168' }, size: { type: 'number', description: 'only this recorded size: 100, 1000 or 10000' } },
       pathParams: { ccy }, pathProps: { ccy: { type: 'string', description: '3-letter currency code, e.g. NGN' } }, routeTemplate: '/fx/:ccy/history', outputExample: HISTORY_EXAMPLE }
     : { url, description: `Executable ${ccy} rate per exchange at your trade size: effective rate, slippage, spread vs the official rate`, serviceName: SERVICE, tags: TAGS, iconUrl,
@@ -302,7 +307,7 @@ export function startFxApi(ctx: Ctx, port: number, say: (s: string) => void = co
   if (pay?.celo) PAY_WITH = 'USDC on Base, or USDT or USDC on Celo'
   server.listen(port, () => say(`FX API on port ${port} (${keys.size ? `${keys.size} API key(s)` : 'no keys'}${pay ? `, x402 $${pay.priceUsd} a call to ${pay.payTo} via ${pay.facilitator === 'self' ? 'self-settlement' : pay.facilitator}${pay.celo ? `; on Celo to ${pay.celo.payTo} via ${pay.celo.facilitator}` : ''}` : ''}${!keys.size && !pay ? ', open to all' : ''})`))
   // History: every FX_RECORD_MIN minutes (0 = off).
-  const every = n('FX_RECORD_MIN', '5') * 60_000
+  const every = RECORD_MIN * 60_000
   if (every > 0) (async () => {
     while (!ctx.stopping()) {
       await new Promise((r) => setTimeout(r, every))

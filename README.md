@@ -23,7 +23,7 @@ Both use the same exchange code, the same honest quotes and the same fair prices
 GET /fx                          free: currencies covered, their official rate, where each trades
 GET /fx/NGN?size=50000           $0.01: per venue, the rate for buying and for selling $50,000 worth, slippage
                                  against a $10 trade there, spread against the official rate, best venue per side
-GET /fx/NGN/history?hours=24     $0.01: the recorded series ($100, $1,000, $10,000 every 5 minutes)
+GET /fx/NGN/history?hours=24     $0.01: the recorded series ($100, $1,000, $10,000 every 30 minutes)
 ```
 
 - **Coverage:** 19 currencies (NGN, BRL, ARS, EUR, KES, GHS, PHP, ZAR, COP, MXN, IDR, SGD, CHF, GBP, CAD, AUD, JPY,
@@ -83,7 +83,8 @@ endpoints whose payments settle through Coinbase's facilitator, which this serve
 runs) with a 1 GB disk for the history (`DATA_DIR=/var/data`). Set `X402_PAY_TO`, and optionally `PUBLIC_URL` (the
 address the discovery documents give; by default the request's own host) and `API_CONTACT_EMAIL` (shown publicly in
 `/openapi.json`; x402scan uses it to verify ownership). `FX_API_CHAINS` picks the chains (default Celo, Base, BSC,
-Polygon); `FX_RECORD_MIN` the history interval (5 minutes; 15 cuts the bot's outbound traffic to a third).
+Polygon); `FX_RECORD_MIN` the history interval (30 minutes; every recording is hundreds of RPC calls, and they are
+almost all of the service's outbound bandwidth on Render, so lower values cost more).
 `FX_API_PORT=8080` serves the same API from inside the trading bot instead. For Celo, add `X402_CELO_API_KEY` (Celo
 payments) and, after `npm run register-agent`, `ERC8004_AGENT_ID`.
 

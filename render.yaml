@@ -27,7 +27,7 @@ services:
       - key: FX_API_KEYS
         sync: false
       - key: FX_RECORD_MIN
-        value: "5"
+        value: "30" # each recording is hundreds of RPC calls: outbound bandwidth
       - key: API_CONTACT_EMAIL # optional, shown publicly in /openapi.json (x402scan ownership check)
         sync: false
       - key: X402_CELO_API_KEY # optional secret from x402.celo.org: also accept USDT/USDC on Celo

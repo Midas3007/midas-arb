@@ -124,7 +124,7 @@ export const CHAINS: Record<string, ChainProfile> = {
   base: {
     key: 'base', chain: base,
     intervalSec: 15, // a full scan every 15 s (about 10 s of work at a $15 trade size); BASE_INTERVAL_SEC to change
-    rpcs: list(process.env.BASE_RPCS, ['https://base-rpc.publicnode.com', 'https://mainnet.base.org', 'https://base.llamarpc.com']),
+    rpcs: list(process.env.BASE_RPCS, ['https://base-rpc.publicnode.com', 'https://mainnet.base.org']),
     cashName: 'USDC', native: 'WETH', minGas: '0.0001',
     hubs: ['WETH', 'USDbC'],
     tokens: {
@@ -200,7 +200,7 @@ export const CHAINS: Record<string, ChainProfile> = {
   },
   polygon: {
     key: 'polygon', chain: polygon,
-    rpcs: list(process.env.POLYGON_RPCS, ['https://polygon-bor-rpc.publicnode.com', 'https://polygon.drpc.org', 'https://polygon.llamarpc.com']),
+    rpcs: list(process.env.POLYGON_RPCS, ['https://polygon-bor-rpc.publicnode.com', 'https://polygon.drpc.org']),
     cashName: 'USDT', native: 'WPOL', minGas: '0.5',
     hubs: ['WPOL', 'USDC'],
     tokens: {
@@ -240,7 +240,7 @@ export const CHAINS: Record<string, ChainProfile> = {
   },
   arbitrum: {
     key: 'arbitrum', chain: arbitrum,
-    rpcs: list(process.env.ARBITRUM_RPCS, ['https://arbitrum-one-rpc.publicnode.com', 'https://arb1.arbitrum.io/rpc', 'https://arbitrum.llamarpc.com']),
+    rpcs: list(process.env.ARBITRUM_RPCS, ['https://arbitrum-one-rpc.publicnode.com', 'https://arb1.arbitrum.io/rpc']),
     cashName: 'USDT', native: 'WETH', minGas: '0.0001',
     hubs: ['WETH', 'USDC'],
     tokens: {

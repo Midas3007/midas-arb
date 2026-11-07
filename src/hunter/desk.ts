@@ -45,6 +45,9 @@ export type FxDesk = {
   venues: () => Venue[]
   coins: () => { X: string; ccy: string; decimals: number }[]
   gasUsd: (units: number) => Promise<number>
+  // Whether an exchange quoted buying / selling this coin at discovery: the others are not asked at all, which keeps
+  // the API's outbound traffic (RPC calls, Textile requests) to what can answer.
+  supports: (venue: string, X: string) => { buy: boolean; sell: boolean }
 }
 
 export type Ctx = {
@@ -405,6 +408,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
 
   // ---------- discovery ----------
   let routes: Route[] = [], discoveredAt = 0, retryDiscoverAt = 0, discoverFails = 0
+  let support = { buy: new Map<string, Set<string>>(), sell: new Map<string, Set<string>>() } // per venue: coins it can buy / sell
   const muted = new Map<string, number>() // junk routes (near-empty or broken pools) -> skipped until this time
   async function discover() {
     // Mento first: it adds the currencies it lists (NGNm, ZARm...), and the other exchanges then look for their pools.
@@ -427,6 +431,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
       venues.forEach((v, i) => { if (back[i] && back[i]! > 0n) canSell.get(v.name)!.add(X) })
     }))
     watcher.set(venues.flatMap((v) => [...v.addrs]))
+    support = { buy: canBuy, sell: canSell }
     routes = buildRoutes(canBuy, venues, canSell).filter(allowed)
     let inside = 0
     for (const v of venues) {
@@ -812,6 +817,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     venues: () => venues,
     coins: () => status.tokens.map((X) => ({ X, ccy: ccyOf(X), decimals: T[X].decimals })),
     gasUsd,
+    supports: (venue, X) => ({ buy: !!support.buy.get(venue)?.has(X), sell: !!support.sell.get(venue)?.has(X) }),
   })
   // Quote-only (the survey, or a server that only answers /fx): find the exchanges and pools, then just serve quotes.
   if (process.env.DESK_QUOTE_ONLY === '1') {
