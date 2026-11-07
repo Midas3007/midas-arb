@@ -453,7 +453,7 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     // An exchange whose discovery failed (its API or RPC was down) is retried soon, not in 6 hours: 2, 4, 8... min.
     if (failed.length) {
       discoverFails++
-      const min = Math.min(60, 2 ** discoverFails)
+      const min = Math.min(process.env.DESK_QUOTE_ONLY === '1' ? 360 : 60, 2 ** discoverFails) // quote-only: up to 6 h, a venue that stays down must not cost a full discovery every hour
       retryDiscoverAt = Date.now() + min * 60_000
       say(`  ${failed.join(', ')} not found this time; trying again in ${min} min`)
     } else { discoverFails = 0; retryDiscoverAt = 0 }
@@ -820,11 +820,12 @@ export async function runChain(p: ChainProfile, ctx: Ctx) {
     supports: (venue, X) => ({ buy: !!support.buy.get(venue)?.has(X), sell: !!support.sell.get(venue)?.has(X) }),
   })
   // Quote-only (the survey, or a server that only answers /fx): find the exchanges and pools, then just serve quotes.
+  // Rediscovery (new pools) every FX_REDISCOVER_HOURS: each one is thousands of RPC calls, so once a day by default.
   if (process.env.DESK_QUOTE_ONLY === '1') {
     await discover()
     while (!ctx.stopping()) {
       await sleep(30_000)
-      if (Date.now() - discoveredAt > 6 * 3_600_000 || (retryDiscoverAt && Date.now() > retryDiscoverAt)) await discover().catch(() => {})
+      if (Date.now() - discoveredAt > n('FX_REDISCOVER_HOURS', '24') * 3_600_000 || (retryDiscoverAt && Date.now() > retryDiscoverAt)) await discover().catch(() => {})
     }
     return
   }
